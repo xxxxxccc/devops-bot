@@ -1,0 +1,66 @@
+{
+  "name": "devops-bot",
+  "version": "0.0.30",
+  "description": "Chat-driven AI coding agent — discuss requirements in group chat, get automated code changes and pull requests",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "devops-bot": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts start",
+    "dev:mcp": "tsx watch src/mcp/server.ts",
+    "build": "tsc",
+    "start": "node dist/index.js start",
+    "mcp": "node dist/index.js mcp",
+    "tools": "node dist/index.js tools",
+    "migrate-tasks": "tsx src/index.ts migrate-tasks",
+    "lint": "biome lint src",
+    "format": "biome format --write src",
+    "check": "biome check src",
+    "link": "pnpm build && npm link"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.72.1",
+    "@larksuiteoapi/node-sdk": "^1.58.0",
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "@slack/bolt": "^4.6.0",
+    "@types/cors": "^2.8.19",
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "glob": "^11.0.0",
+    "multer": "^2.0.2",
+    "node-pty": "^1.1.0",
+    "openai": "^6.25.0",
+    "simple-git": "^3.27.0",
+    "sqlite-vec": "0.1.7-alpha.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "devops",
+    "ai-agent",
+    "automation",
+    "mcp",
+    "chat-driven"
+  ],
+  "author": "DevOps Bot Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xxxxxccc/devops-bot.git"
+  },
+  "license": "MIT"
+}

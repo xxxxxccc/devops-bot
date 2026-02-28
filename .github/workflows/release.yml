@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
+
+      - name: Pack release tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGING="devops-bot-${VERSION}"
+          mkdir "$STAGING"
+          cp -r dist package.json pnpm-lock.yaml .env.example README.md LICENSE install.sh "$STAGING/"
+          tar czf "devops-bot-${VERSION}.tar.gz" "$STAGING"
+          echo "TARBALL=devops-bot-${VERSION}.tar.gz" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.TARBALL }}
+          generate_release_notes: true
