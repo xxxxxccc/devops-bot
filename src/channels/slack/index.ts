@@ -5,7 +5,14 @@
  */
 
 import { App } from '@slack/bolt'
-import type { Attachment, ExtractedLink, IMCard, IMMessage, IMPlatform } from '../types.js'
+import type {
+  Attachment,
+  ExtractedLink,
+  IMCard,
+  IMMessage,
+  IMPlatform,
+  SendOptions,
+} from '../types.js'
 import { createLogger } from '../../infra/logger.js'
 
 const log = createLogger('slack')
@@ -98,11 +105,12 @@ export class SlackChannel implements IMPlatform {
     return this.botUserId
   }
 
-  async sendText(chatId: string, text: string): Promise<void> {
+  async sendText(chatId: string, text: string, opts?: SendOptions): Promise<void> {
     try {
       await this.app.client.chat.postMessage({
         channel: chatId,
         text,
+        ...(opts?.replyTo ? { thread_ts: opts.replyTo } : {}),
       })
     } catch (err) {
       log.error(`Failed to send text to ${chatId}`, {
@@ -111,20 +119,21 @@ export class SlackChannel implements IMPlatform {
     }
   }
 
-  async sendCard(chatId: string, card: IMCard): Promise<string | undefined> {
+  async sendCard(chatId: string, card: IMCard, opts?: SendOptions): Promise<string | undefined> {
     try {
       const blocks = this.buildBlocks(card)
       const resp = await this.app.client.chat.postMessage({
         channel: chatId,
         blocks,
         text: card.header?.title || card.markdown.slice(0, 100),
+        ...(opts?.replyTo ? { thread_ts: opts.replyTo } : {}),
       })
       return resp.ts || undefined
     } catch (err) {
       log.error(`Failed to send card to ${chatId}`, {
         error: err instanceof Error ? err.message : String(err),
       })
-      await this.sendText(chatId, card.markdown)
+      await this.sendText(chatId, card.markdown, opts)
       return undefined
     }
   }

@@ -52,6 +52,12 @@ export interface IMCard {
 
 export type IMPlatformType = 'feishu' | 'slack'
 
+/** Options for sending messages — allows replying in a thread */
+export interface SendOptions {
+  /** Reply to this message ID to create/continue a thread (Feishu话题, Slack thread) */
+  replyTo?: string
+}
+
 export interface IMPlatform {
   readonly id: IMPlatformType
 
@@ -66,11 +72,11 @@ export interface IMPlatform {
     onPassiveMessage?: (msg: IMMessage) => Promise<void>
   }): Promise<void>
 
-  /** Send plain text to a chat */
-  sendText(chatId: string, text: string): Promise<void>
+  /** Send plain text to a chat. If opts.replyTo is set, replies in thread. */
+  sendText(chatId: string, text: string, opts?: SendOptions): Promise<void>
 
   /** Send a rich card message. Returns the message ID for later updates. */
-  sendCard(chatId: string, card: IMCard): Promise<string | undefined>
+  sendCard(chatId: string, card: IMCard, opts?: SendOptions): Promise<string | undefined>
 
   /** Update an existing card message in-place */
   updateCard(messageId: string, card: IMCard): Promise<boolean>

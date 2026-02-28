@@ -387,12 +387,13 @@ export class TaskRunner {
     const cardBody = `📋 任务ID: \`${task.id}\`\n\n${summaryText}${prLine}`
     const card = { markdown: cardBody, header: { title: `✅ 任务完成: ${title}`, color: 'green' } }
     const cardMsgId = task.metadata!.imCardMessageId as string | undefined
+    const replyTo = task.metadata!.imMessageId as string | undefined
 
     try {
       if (cardMsgId) {
         await this.imPlatform.updateCard(cardMsgId, card)
       } else {
-        await this.imPlatform.sendCard(chatId, card)
+        await this.imPlatform.sendCard(chatId, card, { replyTo })
       }
     } catch (e) {
       log.warn('Notify complete failed', { error: e instanceof Error ? e.message : String(e) })
@@ -407,12 +408,13 @@ export class TaskRunner {
     const cardBody = `📋 任务ID: \`${task.id}\`\n\n**错误:** ${task.error || '未知错误'}`
     const card = { markdown: cardBody, header: { title: `❌ 任务失败: ${title}`, color: 'red' } }
     const cardMsgId = task.metadata!.imCardMessageId as string | undefined
+    const replyTo = task.metadata!.imMessageId as string | undefined
 
     try {
       if (cardMsgId) {
         await this.imPlatform.updateCard(cardMsgId, card)
       } else {
-        await this.imPlatform.sendCard(chatId, card)
+        await this.imPlatform.sendCard(chatId, card, { replyTo })
       }
     } catch (e) {
       log.warn('Notify failure failed', { error: e instanceof Error ? e.message : String(e) })

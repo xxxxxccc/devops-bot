@@ -6,7 +6,7 @@
  */
 
 import * as lark from '@larksuiteoapi/node-sdk'
-import type { Attachment, IMCard, IMMessage, IMPlatform } from '../types.js'
+import type { Attachment, IMCard, IMMessage, IMPlatform, SendOptions } from '../types.js'
 import { FeishuMessageParser } from './parser.js'
 import { retry } from '../../infra/retry.js'
 import { createLogger } from '../../infra/logger.js'
@@ -83,18 +83,20 @@ export class FeishuChannel implements IMPlatform {
     return this.botOpenId || ''
   }
 
-  async sendText(chatId: string, text: string): Promise<void> {
+  async sendText(chatId: string, text: string, opts?: SendOptions): Promise<void> {
+    const content = JSON.stringify({ text })
     try {
       await retry(
         () =>
-          this.client.im.message.create({
-            params: { receive_id_type: 'chat_id' },
-            data: {
-              receive_id: chatId,
-              content: JSON.stringify({ text }),
-              msg_type: 'text',
-            },
-          }),
+          opts?.replyTo
+            ? this.client.im.message.reply({
+                path: { message_id: opts.replyTo },
+                data: { content, msg_type: 'text', reply_in_thread: true },
+              })
+            : this.client.im.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: { receive_id: chatId, content, msg_type: 'text' },
+              }),
         {
           maxAttempts: 3,
           onRetry: (err, attempt, delay) =>
@@ -112,18 +114,20 @@ export class FeishuChannel implements IMPlatform {
     }
   }
 
-  async sendCard(chatId: string, card: IMCard): Promise<string | undefined> {
+  async sendCard(chatId: string, card: IMCard, opts?: SendOptions): Promise<string | undefined> {
+    const content = this.buildCardJson(card)
     try {
       const resp = await retry(
         () =>
-          this.client.im.message.create({
-            params: { receive_id_type: 'chat_id' },
-            data: {
-              receive_id: chatId,
-              content: this.buildCardJson(card),
-              msg_type: 'interactive',
-            },
-          }),
+          opts?.replyTo
+            ? this.client.im.message.reply({
+                path: { message_id: opts.replyTo },
+                data: { content, msg_type: 'interactive', reply_in_thread: true },
+              })
+            : this.client.im.message.create({
+                params: { receive_id_type: 'chat_id' },
+                data: { receive_id: chatId, content, msg_type: 'interactive' },
+              }),
         {
           maxAttempts: 3,
           onRetry: (err, attempt, delay) =>
@@ -139,7 +143,7 @@ export class FeishuChannel implements IMPlatform {
       log.error(`Failed to send card to ${chatId}`, {
         error: err instanceof Error ? err.message : String(err),
       })
-      await this.sendText(chatId, card.markdown)
+      await this.sendText(chatId, card.markdown, opts)
       return undefined
     }
   }

@@ -135,13 +135,15 @@ export class Dispatcher {
       memoryAvailable: !!this.memoryStoreRef,
     })
 
-    // Send "thinking" card
+    // Send "thinking" card as a thread reply to the user's message
+    const replyOpts = { replyTo: msg.messageId }
     let thinkingCardId: string | undefined
     try {
-      thinkingCardId = await this.platform.sendCard(msg.chatId, {
-        markdown: '🔍 正在分析你的消息…',
-        header: { title: '💭 思考中', color: 'blue' },
-      })
+      thinkingCardId = await this.platform.sendCard(
+        msg.chatId,
+        { markdown: '🔍 正在分析你的消息…', header: { title: '💭 思考中', color: 'blue' } },
+        replyOpts,
+      )
     } catch {
       log.warn('Failed to send thinking card')
     }
@@ -177,10 +179,10 @@ export class Dispatcher {
           header: { title: '❌ 处理失败', color: 'red' },
         })
         if (!updated) {
-          await this.platform.sendText(msg.chatId, errorMsg)
+          await this.platform.sendText(msg.chatId, errorMsg, replyOpts)
         }
       } else {
-        await this.platform.sendText(msg.chatId, errorMsg)
+        await this.platform.sendText(msg.chatId, errorMsg, replyOpts)
       }
       return
     }
@@ -191,6 +193,7 @@ export class Dispatcher {
       conversation,
       projectPath,
       thinkingCardId,
+      replyTo: msg.messageId,
     })
   }
 
@@ -203,13 +206,14 @@ export class Dispatcher {
     markdown: string,
     thinkingCardId?: string,
     header?: { title: string; color?: string },
+    replyTo?: string,
   ): Promise<void> {
     if (thinkingCardId) {
       const ok = await this.platform.updateCard(thinkingCardId, { markdown, header })
       if (ok) return
       log.warn('updateCard failed, falling back to new message')
     }
-    await this.platform.sendCard(chatId, { markdown, header })
+    await this.platform.sendCard(chatId, { markdown, header }, { replyTo })
   }
 
   private async routeResponse(
@@ -221,12 +225,13 @@ export class Dispatcher {
       conversation: import('../memory/types.js').ConversationRecord
       projectPath: string
       thinkingCardId?: string
+      replyTo?: string
     },
   ): Promise<void> {
     switch (response.intent) {
       case 'chat': {
         const reply = response.reply || '收到'
-        await this.deliverReply(msg.chatId, reply, ctx.thinkingCardId)
+        await this.deliverReply(msg.chatId, reply, ctx.thinkingCardId, undefined, ctx.replyTo)
         ctx.store.addMessage(
           msg.chatId,
           { role: 'assistant', content: reply, timestamp: new Date().toISOString() },
@@ -238,7 +243,7 @@ export class Dispatcher {
 
       case 'query_memory': {
         const reply = response.reply || '没有找到相关记录'
-        await this.deliverReply(msg.chatId, reply, ctx.thinkingCardId)
+        await this.deliverReply(msg.chatId, reply, ctx.thinkingCardId, undefined, ctx.replyTo)
         ctx.store.addMessage(
           msg.chatId,
           { role: 'assistant', content: reply, timestamp: new Date().toISOString() },
@@ -253,6 +258,8 @@ export class Dispatcher {
             msg.chatId,
             '无法提取任务标题，请更详细地描述你的需求',
             ctx.thinkingCardId,
+            undefined,
+            ctx.replyTo,
           )
           return
         }
@@ -295,10 +302,11 @@ export class Dispatcher {
           }
         }
         if (!cardMessageId) {
-          cardMessageId = await this.platform.sendCard(msg.chatId, {
-            markdown: taskCard,
-            header: taskHeader,
-          })
+          cardMessageId = await this.platform.sendCard(
+            msg.chatId,
+            { markdown: taskCard, header: taskHeader },
+            { replyTo: ctx.replyTo },
+          )
         }
 
         if (cardMessageId) {
