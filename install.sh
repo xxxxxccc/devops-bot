@@ -154,8 +154,9 @@ install_from_local() {
   [ -f "$INSTALL_DIR/.env.local" ] && cp "$INSTALL_DIR/.env.local" "$tmpdir/env_bak"
 
   # Copy runtime artefacts only (no src, no .git)
-  rm -rf "$INSTALL_DIR/dist"
+  rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/skills"
   cp -r "$SCRIPT_DIR/dist"          "$INSTALL_DIR/dist"
+  [ -d "$SCRIPT_DIR/skills" ]      && cp -r "$SCRIPT_DIR/skills" "$INSTALL_DIR/skills"
   cp    "$SCRIPT_DIR/package.json"   "$INSTALL_DIR/package.json"
   cp    "$SCRIPT_DIR/.env.example"   "$INSTALL_DIR/.env.example"
   cp    "$SCRIPT_DIR/README.md"      "$INSTALL_DIR/README.md"

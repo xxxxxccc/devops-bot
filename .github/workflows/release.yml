@@ -29,7 +29,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           STAGING="devops-bot-${VERSION}"
           mkdir "$STAGING"
-          cp -r dist package.json pnpm-lock.yaml .env.example README.md LICENSE install.sh "$STAGING/"
+          cp -r dist skills package.json pnpm-lock.yaml .env.example README.md LICENSE install.sh "$STAGING/"
           tar czf "devops-bot-${VERSION}.tar.gz" "$STAGING"
           echo "TARBALL=devops-bot-${VERSION}.tar.gz" >> "$GITHUB_ENV"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
