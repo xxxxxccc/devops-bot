@@ -1,6 +1,6 @@
 {
   "name": "devops-bot",
-  "version": "0.0.32",
+  "version": "0.0.33",
   "description": "Chat-driven AI coding agent — discuss requirements in group chat, get automated code changes and pull requests",
   "type": "module",
   "main": "dist/index.js",

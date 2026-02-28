@@ -322,8 +322,9 @@ export class MemoryDatabase {
     if (!this.vectorAvailable) return
     try {
       const blob = vectorToBlob(embedding)
-      const stmt = this.db.prepare('INSERT OR REPLACE INTO memory_vec(id, embedding) VALUES (?, ?)')
-      stmt.run(id, blob)
+      // vec0 virtual tables don't support INSERT OR REPLACE — delete first if exists
+      this.db.prepare('DELETE FROM memory_vec WHERE id = ?').run(id)
+      this.db.prepare('INSERT INTO memory_vec(id, embedding) VALUES (?, ?)').run(id, blob)
     } catch (err) {
       log.warn(`Failed to insert vector for ${id}`, {
         error: err instanceof Error ? err.message : String(err),
