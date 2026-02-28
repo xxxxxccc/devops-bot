@@ -342,6 +342,9 @@ configure_im() {
 
 # --- Optional: Jira ---
 configure_jira() {
+  if grep -q "^JIRA_URL=.\+" "$ENV_FILE" 2>/dev/null; then
+    return 0
+  fi
   echo ""
   echo -ne "${YELLOW}Configure Jira integration? [y/N]: ${NC}"
   read -n 1 -r
@@ -373,6 +376,9 @@ configure_jira() {
 
 # --- Optional: Figma ---
 configure_figma() {
+  if grep -q "^FIGMA_API_KEY=.\+" "$ENV_FILE" 2>/dev/null; then
+    return 0
+  fi
   echo ""
   echo -ne "${YELLOW}Configure Figma integration? [y/N]: ${NC}"
   read -n 1 -r
@@ -398,6 +404,9 @@ configure_figma() {
 
 # --- Optional: local vector search ---
 configure_embedding() {
+  if [ -d "$INSTALL_DIR/models" ] && ls "$INSTALL_DIR/models"/*.gguf &>/dev/null; then
+    return 0
+  fi
   echo ""
   echo -ne "${YELLOW}Enable local vector search? (embeddinggemma-300M, ~300MB) [y/N]: ${NC}"
   read -n 1 -r
@@ -420,12 +429,23 @@ configure_embedding() {
   fi
 }
 
-configure_ai
-configure_project
-configure_im
-configure_jira
-configure_figma
-configure_embedding
+# Only run interactive config if essential settings are missing
+IS_UPGRADE=false
+if grep -q "^AI_API_KEY=.\+" "$ENV_FILE" 2>/dev/null \
+   && grep -q "^TARGET_PROJECT_PATH=.\+" "$ENV_FILE" 2>/dev/null \
+   && ! grep -q "^TARGET_PROJECT_PATH=/path/to/your/project" "$ENV_FILE" 2>/dev/null; then
+  IS_UPGRADE=true
+  success "Existing configuration detected — skipping setup wizard"
+fi
+
+if [ "$IS_UPGRADE" = false ]; then
+  configure_ai
+  configure_project
+  configure_im
+  configure_jira
+  configure_figma
+  configure_embedding
+fi
 
 echo ""
 
