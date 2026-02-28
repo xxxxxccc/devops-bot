@@ -432,6 +432,94 @@ configure_figma() {
   fi
 }
 
+# --- Helper: prompt for GitHub token with step-by-step guide ---
+prompt_github_token() {
+  echo ""
+  echo "  To create a GitHub Fine-grained Personal Access Token:"
+  echo ""
+  echo "    1. Go to: ${BLUE}https://github.com/settings/tokens?type=beta${NC}"
+  echo "    2. Click 'Generate new token'"
+  echo "    3. Under 'Repository access', select your target repository"
+  echo "    4. Under 'Permissions → Repository permissions', enable:"
+  echo "       • ${GREEN}Pull requests${NC}: Read and write"
+  echo "       (git push uses your existing SSH key / credential — no other permissions needed)"
+  echo "    5. Click 'Generate token' and paste it below"
+  echo ""
+  echo -ne "${YELLOW}GitHub Token (Enter to skip): ${NC}"
+  read -r TOKEN_VAL
+  if [ -n "$TOKEN_VAL" ]; then
+    echo "GITHUB_TOKEN=$TOKEN_VAL" >> "$ENV_FILE"
+    success "GitHub token configured — PRs will be auto-created"
+  else
+    warn "Skipped — branches will be pushed but PRs won't be created automatically"
+    info "Add GITHUB_TOKEN to .env.local later to enable PR creation"
+  fi
+}
+
+# --- Optional: Git Platform Token (for auto-creating PRs/MRs) ---
+configure_git_token() {
+  if grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null \
+     || grep -q "^GITLAB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  echo ""
+  echo -e "${BLUE}━━━ PR/MR Auto-Creation ━━━${NC}"
+  echo ""
+  echo "  When the AI completes a task, it pushes changes to a new branch"
+  echo "  and can automatically create a Pull Request / Merge Request."
+  echo ""
+  echo "  • ${GREEN}GitLab${NC} (including self-hosted): No token needed!"
+  echo "    MRs are created via git push options using your existing git credentials."
+  echo ""
+  echo "  • ${GREEN}GitHub${NC}: A Personal Access Token is required."
+  echo "    GitHub doesn't support creating PRs through git — it requires the API."
+  echo ""
+
+  # Try to auto-detect platform from TARGET_PROJECT_PATH
+  DETECTED_PLATFORM=""
+  TARGET_PATH=$(grep "^TARGET_PROJECT_PATH=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)
+  if [ -n "$TARGET_PATH" ] && [ -d "$TARGET_PATH/.git" ]; then
+    REMOTE_URL=$(git -C "$TARGET_PATH" remote get-url origin 2>/dev/null || true)
+    if echo "$REMOTE_URL" | grep -qi "github"; then
+      DETECTED_PLATFORM="github"
+      echo -e "  Detected: ${GREEN}GitHub${NC} project (from remote URL)"
+    elif echo "$REMOTE_URL" | grep -qi "gitlab"; then
+      DETECTED_PLATFORM="gitlab"
+      echo -e "  Detected: ${GREEN}GitLab${NC} project (from remote URL) — no token needed!"
+    fi
+    echo ""
+  fi
+
+  # GitLab — skip token, just inform
+  if [ "$DETECTED_PLATFORM" = "gitlab" ]; then
+    success "GitLab detected — PRs will be created via push options (no token needed)"
+    return 0
+  fi
+
+  # GitHub — need token
+  if [ "$DETECTED_PLATFORM" = "github" ]; then
+    prompt_github_token
+    return 0
+  fi
+
+  # Unknown / not detected — ask
+  echo -ne "${YELLOW}Which platform does your project use? [github/gitlab/skip]: ${NC}"
+  read -r GIT_PLATFORM
+  case "$GIT_PLATFORM" in
+    github)
+      prompt_github_token
+      ;;
+    gitlab)
+      success "GitLab — PRs will be created via push options (no token needed)"
+      info "If your GitLab instance blocks push options, add GITLAB_TOKEN to .env.local"
+      ;;
+    *)
+      info "Skipped — configure GITHUB_TOKEN or GITLAB_TOKEN in .env.local later"
+      ;;
+  esac
+}
+
 # --- Optional: local vector search ---
 configure_embedding() {
   if [ -d "$INSTALL_DIR/models" ] && ls "$INSTALL_DIR/models"/*.gguf &>/dev/null; then
@@ -474,6 +562,7 @@ if [ "$IS_UPGRADE" = false ]; then
   configure_im
   configure_jira
   configure_figma
+  configure_git_token
   configure_embedding
 fi
 

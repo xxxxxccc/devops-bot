@@ -60,6 +60,19 @@ function monthKey(): string {
   return new Date().toISOString().slice(0, 7)
 }
 
+/** Composite key for per-group, per-month conversation storage */
+function convKey(chatId: string, date: string): string {
+  return `${chatId}:${date}`
+}
+
+/**
+ * Sanitize chatId for use in filenames.
+ * Replace characters that are invalid in filenames with underscores.
+ */
+function sanitizeChatId(chatId: string): string {
+  return chatId.replace(/[/:*?"<>|\\]/g, '_')
+}
+
 /** Conversation metadata stored in _state.json */
 interface ConversationState {
   chatId: string
@@ -75,7 +88,7 @@ export class MemoryStore {
   /** Whether embedding provider initialization has been attempted */
   private embeddingInitialized = false
 
-  /** In-memory conversation cache: month (YYYY-MM) -> ConversationRecord */
+  /** In-memory conversation cache: "chatId:YYYY-MM" -> ConversationRecord */
   private conversations: Map<string, ConversationRecord> = new Map()
 
   /** Pending messages to append: date -> ChatMessage[] */
@@ -253,7 +266,7 @@ export class MemoryStore {
       const files = await readdir(CONVERSATIONS_DIR)
       for (const file of files) {
         if (!file.endsWith('.jsonl')) continue
-        const date = file.replace('.jsonl', '')
+        const stem = file.replace('.jsonl', '')
         const messages: ChatMessage[] = []
         try {
           const content = await readFile(join(CONVERSATIONS_DIR, file), 'utf-8')
@@ -268,18 +281,29 @@ export class MemoryStore {
         } catch {
           continue
         }
-        const meta = state[date]
-        this.conversations.set(date, {
-          id: `conv-${date}`,
-          chatId: meta?.chatId || 'unknown',
+
+        const meta = state[stem]
+        const chatId = meta?.chatId || 'unknown'
+
+        // Derive date: last 7 chars are always YYYY-MM (works for both formats)
+        const date = stem.slice(-7)
+
+        // Always use canonical in-memory key format: "chatId:YYYY-MM"
+        // This ensures getConversation() can find it after restart.
+        const key = convKey(chatId, date)
+
+        this.conversations.set(key, {
+          id: `conv-${key}`,
+          chatId,
           date,
+          key,
           messages,
           projectPath: meta?.projectPath || '',
           createdAt: messages[0]?.timestamp || new Date().toISOString(),
           extractedUpTo: meta?.extractedUpTo || 0,
         })
       }
-      log.info(`Loaded ${this.conversations.size} conversation month(s)`)
+      log.info(`Loaded ${this.conversations.size} conversation(s)`)
     } catch {
       // Empty conversations dir
     }
@@ -418,30 +442,36 @@ export class MemoryStore {
     return result
   }
 
-  /** Get sorted list of available conversation months (most recent first) */
+  /** Get sorted list of available conversation dates (most recent first) */
   getConversationDates(): string[] {
-    return Array.from(this.conversations.keys()).sort().reverse()
+    const dates = new Set<string>()
+    for (const conv of this.conversations.values()) {
+      dates.add(conv.date)
+    }
+    return Array.from(dates).sort().reverse()
   }
 
   // ========================
-  // Conversations (month-based JSONL — unchanged)
+  // Conversations (per-group, per-month JSONL)
   // ========================
 
   getConversation(chatId: string, projectPath: string): ConversationRecord {
     const date = monthKey()
-    if (this.conversations.has(date)) {
-      return this.conversations.get(date)!
+    const key = convKey(chatId, date)
+    if (this.conversations.has(key)) {
+      return this.conversations.get(key)!
     }
     const record: ConversationRecord = {
-      id: `conv-${date}`,
+      id: `conv-${key}`,
       chatId,
       date,
+      key,
       messages: [],
       projectPath,
       createdAt: new Date().toISOString(),
       extractedUpTo: 0,
     }
-    this.conversations.set(date, record)
+    this.conversations.set(key, record)
     this.stateChanged = true
     this.scheduleSave()
     return record
@@ -451,22 +481,23 @@ export class MemoryStore {
     const conv = this.getConversation(chatId, projectPath)
     conv.messages.push(message)
 
-    const date = conv.date
-    if (!this.pendingMessages.has(date)) {
-      this.pendingMessages.set(date, [])
+    if (!this.pendingMessages.has(conv.key)) {
+      this.pendingMessages.set(conv.key, [])
     }
-    this.pendingMessages.get(date)!.push(message)
+    this.pendingMessages.get(conv.key)!.push(message)
     this.scheduleSave()
     return conv
   }
 
   getRecentMessages(chatId: string, count = 10): ChatMessage[] {
-    const dates = Array.from(this.conversations.keys()).sort().reverse()
-    const collected: ChatMessage[] = []
+    const keys = Array.from(this.conversations.keys())
+      .filter((k) => this.conversations.get(k)!.chatId === chatId)
+      .sort()
+      .reverse()
 
-    for (const date of dates) {
-      const conv = this.conversations.get(date)!
-      if (conv.chatId !== chatId) continue
+    const collected: ChatMessage[] = []
+    for (const key of keys) {
+      const conv = this.conversations.get(key)!
       collected.unshift(...conv.messages)
       if (collected.length >= count) break
     }
@@ -474,8 +505,8 @@ export class MemoryStore {
     return collected.slice(-count)
   }
 
-  updateExtractedUpTo(date: string, count: number): void {
-    const conv = this.conversations.get(date)
+  updateExtractedUpTo(key: string, count: number): void {
+    const conv = this.conversations.get(key)
     if (conv) {
       conv.extractedUpTo = count
       this.stateChanged = true
@@ -510,17 +541,22 @@ export class MemoryStore {
 
     const writes: Promise<void>[] = []
 
-    // Append pending messages, grouped by date
-    for (const [date, messages] of this.pendingMessages) {
+    // Append pending messages, grouped by conversation key
+    for (const [key, messages] of this.pendingMessages) {
+      const conv = this.conversations.get(key)
+      const filename = conv
+        ? `${sanitizeChatId(conv.chatId)}_${conv.date}.jsonl`
+        : `${key.replace(':', '_')}.jsonl`
       const lines = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
-      writes.push(appendFile(join(CONVERSATIONS_DIR, `${date}.jsonl`), lines, 'utf-8'))
+      writes.push(appendFile(join(CONVERSATIONS_DIR, filename), lines, 'utf-8'))
     }
 
     // Overwrite conversation state if metadata changed
     if (this.stateChanged) {
       const state: Record<string, ConversationState> = {}
-      for (const [date, conv] of this.conversations) {
-        state[date] = {
+      for (const [, conv] of this.conversations) {
+        const fileKey = `${sanitizeChatId(conv.chatId)}_${conv.date}`
+        state[fileKey] = {
           chatId: conv.chatId,
           extractedUpTo: conv.extractedUpTo,
           projectPath: conv.projectPath,

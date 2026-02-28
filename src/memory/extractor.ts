@@ -59,7 +59,7 @@ export class MemoryExtractor {
         this.store.addItems(items)
         log.info(`Extracted ${items.length} memories from conversation`)
       }
-      this.store.updateExtractedUpTo(conversation.date, conversation.messages.length)
+      this.store.updateExtractedUpTo(conversation.key, conversation.messages.length)
     } catch (err) {
       log.error('Failed to extract from conversation', {
         error: err instanceof Error ? err.message : String(err),

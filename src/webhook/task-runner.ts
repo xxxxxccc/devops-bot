@@ -267,7 +267,7 @@ export class TaskRunner {
 
     const devopsRoot = join(__dirname, '..', '..')
     const projectRules = this.projectScanner.getProjectRules(this.config.projectPath)
-    const skills = this.skillScanner.getSkills(devopsRoot)
+    const skills = this.skillScanner.getSkills(devopsRoot, this.config.projectPath)
     const jiraEnabled = !!(process.env.JIRA_URL && process.env.JIRA_API_TOKEN)
     const figmaEnabled = !!process.env.FIGMA_API_KEY
     const systemPrompt = buildExecutorSystemPrompt({

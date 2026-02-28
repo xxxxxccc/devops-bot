@@ -5,8 +5,13 @@
  * - Tasks never interfere with the local working tree
  * - Multiple tasks can run concurrently (future)
  * - Changes are committed on isolated branches and submitted as PRs
+ *
+ * After creating a worktree, dependencies are installed automatically by
+ * detecting the project's package manager. A custom setup command can be
+ * provided via SANDBOX_SETUP_COMMAND for non-standard projects.
  */
 
+import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { simpleGit } from 'simple-git'
@@ -35,6 +40,8 @@ export interface SandboxConfig {
   autoCreatePR: boolean
   /** Whether to create PR as draft (default: true) */
   draftPR: boolean
+  /** Custom command to run after worktree creation (overrides auto-detect) */
+  setupCommand?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -46,6 +53,7 @@ export function loadSandboxConfig(): SandboxConfig {
     baseDir: process.env.SANDBOX_BASE_DIR || '/tmp/devops-bot-sandbox',
     autoCreatePR: process.env.AUTO_CREATE_PR !== 'false',
     draftPR: process.env.PR_DRAFT !== 'false',
+    setupCommand: process.env.SANDBOX_SETUP_COMMAND || undefined,
   }
 }
 
@@ -72,6 +80,7 @@ export class SandboxManager {
    * 1. Records current branch as baseBranch
    * 2. Creates a new branch `devops-bot/task-{id}-{slug}`
    * 3. Creates a worktree at `{baseDir}/{taskId}`
+   * 4. Installs dependencies (auto-detected or via SANDBOX_SETUP_COMMAND)
    */
   async createSandbox(taskId: string, taskTitle: string, projectPath: string): Promise<Sandbox> {
     const git = simpleGit(projectPath)
@@ -96,6 +105,9 @@ export class SandboxManager {
     // Create worktree with a new branch based on current HEAD
     await git.raw(['worktree', 'add', '-b', branchName, worktreePath, 'HEAD'])
 
+    // Install dependencies so tools (biome, tsc, etc.) are available
+    await this.installDependencies(projectPath, worktreePath)
+
     // Initialize submodules in the worktree if any exist
     const submodules = await this.initSubmodules(projectPath, worktreePath)
 
@@ -114,44 +126,43 @@ export class SandboxManager {
   }
 
   /**
-   * Finalize a sandbox: push the branch and optionally create a PR.
-   * Returns the PR/MR URL if created.
+   * Finalize a sandbox: push the branch and optionally create a PR/MR.
+   *
+   * For GitLab, push and MR creation happen in one step via push options
+   * (zero extra config — uses the same git credentials as push).
+   * For GitHub, push first then create PR via API or CLI.
    */
   async finalizeSandbox(
     sandbox: Sandbox,
     taskTitle: string,
     taskDescription?: string,
   ): Promise<{ prUrl?: string }> {
-    const git = simpleGit(sandbox.worktreePath)
-
-    // Check if there are any commits on this branch beyond the base
     const hasChanges = await this.branchHasNewCommits(sandbox)
     if (!hasChanges) {
       log.info('No commits in sandbox, skipping finalize', { taskId: sandbox.taskId })
       return {}
     }
 
-    // Push the branch
-    log.info('Pushing sandbox branch', { branch: sandbox.branchName })
-    await git.push(['--set-upstream', 'origin', sandbox.branchName])
-
-    // Create PR if configured
-    if (!this.config.autoCreatePR) {
-      log.info('Auto PR creation disabled, skipping', { taskId: sandbox.taskId })
-      return {}
-    }
-
-    const { createPullRequest } = await import('./pr-creator.js')
-    const prUrl = await createPullRequest({
+    const prOpts = {
+      worktreePath: sandbox.worktreePath,
       projectPath: sandbox.projectPath,
       branchName: sandbox.branchName,
       baseBranch: sandbox.baseBranch,
       title: taskTitle,
       description: taskDescription,
       draft: this.config.draftPR,
-    })
+    }
 
-    return { prUrl: prUrl ?? undefined }
+    if (!this.config.autoCreatePR) {
+      log.info('Auto PR creation disabled, pushing branch only')
+      const { pushOnly } = await import('./pr-creator.js')
+      await pushOnly(prOpts)
+      return {}
+    }
+
+    const { pushAndCreatePR } = await import('./pr-creator.js')
+    const prUrl = await pushAndCreatePR(prOpts)
+    return { prUrl }
   }
 
   /**
@@ -177,6 +188,59 @@ export class SandboxManager {
   /* ---------------------------------------------------------------- */
   /*  Internal helpers                                                 */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * Install dependencies in the worktree so CLI tools are available.
+   *
+   * Strategy:
+   *   1. If SANDBOX_SETUP_COMMAND is set, run it (for iOS/Android/custom projects)
+   *   2. Otherwise, auto-detect the package manager from lockfiles and run install
+   *
+   * Auto-detected ecosystems:
+   *   - pnpm  (pnpm-lock.yaml)   → pnpm install --frozen-lockfile
+   *   - npm   (package-lock.json) → npm ci
+   *   - yarn  (yarn.lock)         → yarn install --frozen-lockfile
+   *   - bun   (bun.lockb)         → bun install --frozen-lockfile
+   *   - pip   (requirements.txt)  → pip install -r requirements.txt
+   *   - composer (composer.lock)   → composer install --no-interaction
+   *   - bundler (Gemfile.lock)     → bundle install
+   *   - cocoapods (Podfile.lock)   → pod install
+   */
+  private async installDependencies(projectPath: string, worktreePath: string): Promise<void> {
+    // Custom command takes full precedence
+    if (this.config.setupCommand) {
+      log.info('Running custom sandbox setup command', { command: this.config.setupCommand })
+      this.runSetupCommand(this.config.setupCommand, worktreePath)
+      return
+    }
+
+    const commands = detectInstallCommands(projectPath)
+    if (commands.length === 0) {
+      log.info('No package manager detected, skipping dependency install')
+      return
+    }
+
+    for (const { name, command } of commands) {
+      log.info(`Installing ${name} dependencies in sandbox`, { command })
+      this.runSetupCommand(command, worktreePath)
+    }
+  }
+
+  private runSetupCommand(command: string, cwd: string): void {
+    try {
+      execSync(command, {
+        cwd,
+        timeout: 300_000, // 5 min
+        stdio: 'pipe',
+        env: { ...process.env, CI: '1' },
+      })
+    } catch (error) {
+      log.warn('Sandbox setup command failed, tools may be unavailable', {
+        command,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 
   /**
    * Detect and initialize submodules in the worktree.
@@ -255,6 +319,67 @@ export class SandboxManager {
       }
     }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Package manager detection                                          */
+/* ------------------------------------------------------------------ */
+
+interface InstallCommand {
+  name: string
+  command: string
+}
+
+/**
+ * Detect package managers from lockfiles / manifests in the project.
+ * Returns install commands in priority order.
+ */
+function detectInstallCommands(projectPath: string): InstallCommand[] {
+  const commands: InstallCommand[] = []
+
+  // Node.js — detect from lockfile (most specific wins)
+  if (existsSync(join(projectPath, 'pnpm-lock.yaml'))) {
+    commands.push({ name: 'pnpm', command: 'pnpm install --frozen-lockfile' })
+  } else if (
+    existsSync(join(projectPath, 'bun.lockb')) ||
+    existsSync(join(projectPath, 'bun.lock'))
+  ) {
+    commands.push({ name: 'bun', command: 'bun install --frozen-lockfile' })
+  } else if (existsSync(join(projectPath, 'yarn.lock'))) {
+    commands.push({ name: 'yarn', command: 'yarn install --frozen-lockfile' })
+  } else if (existsSync(join(projectPath, 'package-lock.json'))) {
+    commands.push({ name: 'npm', command: 'npm ci' })
+  } else if (existsSync(join(projectPath, 'package.json'))) {
+    commands.push({ name: 'npm', command: 'npm install' })
+  }
+
+  // Python
+  if (existsSync(join(projectPath, 'requirements.txt'))) {
+    commands.push({ name: 'pip', command: 'pip install -r requirements.txt -q' })
+  } else if (existsSync(join(projectPath, 'pyproject.toml'))) {
+    if (existsSync(join(projectPath, 'poetry.lock'))) {
+      commands.push({ name: 'poetry', command: 'poetry install --no-interaction' })
+    } else if (existsSync(join(projectPath, 'uv.lock'))) {
+      commands.push({ name: 'uv', command: 'uv sync' })
+    }
+  }
+
+  // Ruby
+  if (existsSync(join(projectPath, 'Gemfile.lock'))) {
+    commands.push({ name: 'bundler', command: 'bundle install --quiet' })
+  }
+
+  // PHP
+  if (existsSync(join(projectPath, 'composer.lock'))) {
+    commands.push({ name: 'composer', command: 'composer install --no-interaction --quiet' })
+  }
+
+  // iOS (CocoaPods)
+  if (existsSync(join(projectPath, 'Podfile.lock'))) {
+    commands.push({ name: 'cocoapods', command: 'pod install' })
+  }
+
+  return commands
 }
 
 /* ------------------------------------------------------------------ */

@@ -49,10 +49,12 @@ export interface ChatMessage {
 /** A recorded conversation (for memory extraction) */
 export interface ConversationRecord {
   id: string
-  /** Feishu chat ID */
+  /** IM chat / group ID (each group has its own conversation) */
   chatId: string
   /** Month of this conversation segment (YYYY-MM) */
   date: string
+  /** Composite key: chatId:date (used for storage lookup) */
+  key: string
   messages: ChatMessage[]
   projectPath: string
   createdAt: string

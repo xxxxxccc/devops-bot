@@ -1,11 +1,13 @@
 /**
- * Skill Scanner — discovers bundled skills from the skills/ directory.
+ * Skill Scanner — discovers skills from multiple directories.
  *
- * Each skill is a subdirectory containing a SKILL.md with YAML frontmatter
- * (name + description). Only metadata is extracted; full content is loaded
+ * Scans two sources with priority-based merging:
+ *   1. Bundled skills  (devops-bot install dir / skills/)  — lower priority
+ *   2. Project skills  (TARGET_PROJECT_PATH / skills/)     — higher priority
+ *
+ * When the same skill name exists in both, the project version wins.
+ * Only metadata (name + description) is extracted; full SKILL.md is loaded
  * on demand by the executor via read_file.
- *
- * Results are cached after the first scan.
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
@@ -21,54 +23,83 @@ export interface SkillEntry {
   description: string
   /** Absolute path to SKILL.md (executor reads this on demand) */
   location: string
+  /** Where this skill was loaded from */
+  source: 'bundled' | 'project'
 }
 
 export class SkillScanner {
   private cache: SkillEntry[] | null = null
 
   /**
-   * Scan the bundled skills/ directory and extract metadata.
-   * @param projectRoot  Root of the devops-bot installation (contains skills/)
+   * Scan skills from bundled + project directories and merge by priority.
+   * @param bundledRoot  Root of the devops-bot installation (contains skills/)
+   * @param projectPath  Root of the target project (optional, may also contain skills/)
    */
-  getSkills(projectRoot: string): SkillEntry[] {
+  getSkills(bundledRoot: string, projectPath?: string): SkillEntry[] {
     if (this.cache !== null) return this.cache
 
-    const skillsDir = join(projectRoot, 'skills')
-    const entries: SkillEntry[] = []
+    const merged = new Map<string, SkillEntry>()
 
-    try {
-      const dirs = readdirSync(skillsDir, { withFileTypes: true }).filter(
-        (d) => d.isDirectory() && !d.name.startsWith('.'),
-      )
-
-      for (const dir of dirs) {
-        const skillMdPath = join(skillsDir, dir.name, 'SKILL.md')
-        try {
-          const content = readFileSync(skillMdPath, 'utf-8')
-          const meta = parseFrontmatter(content)
-          if (meta.name && meta.description) {
-            entries.push({
-              name: meta.name,
-              description: meta.description,
-              location: skillMdPath,
-            })
-          } else {
-            log.warn(`Skipping skill ${dir.name}: missing name or description in frontmatter`)
-          }
-        } catch {
-          // SKILL.md doesn't exist or is unreadable — skip silently
-        }
-      }
-    } catch {
-      // skills/ directory doesn't exist — that's fine, return empty
+    for (const entry of scanDir(join(bundledRoot, 'skills'), 'bundled')) {
+      merged.set(entry.name, entry)
     }
 
+    if (projectPath) {
+      for (const entry of scanDir(join(projectPath, 'skills'), 'project')) {
+        merged.set(entry.name, entry)
+      }
+    }
+
+    const entries = [...merged.values()]
     this.cache = entries
+
     if (entries.length > 0) {
-      log.info(`Loaded ${entries.length} skill(s): ${entries.map((s) => s.name).join(', ')}`)
+      const bundled = entries.filter((s) => s.source === 'bundled').length
+      const project = entries.filter((s) => s.source === 'project').length
+      log.info(`Loaded ${entries.length} skill(s): ${bundled} bundled, ${project} project`)
     }
     return entries
   }
+
+  invalidateCache(): void {
+    this.cache = null
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Directory scanner                                                   */
+/* ------------------------------------------------------------------ */
+
+function scanDir(skillsDir: string, source: SkillEntry['source']): SkillEntry[] {
+  const entries: SkillEntry[] = []
+  try {
+    const dirs = readdirSync(skillsDir, { withFileTypes: true }).filter(
+      (d) => d.isDirectory() && !d.name.startsWith('.'),
+    )
+
+    for (const dir of dirs) {
+      const skillMdPath = join(skillsDir, dir.name, 'SKILL.md')
+      try {
+        const content = readFileSync(skillMdPath, 'utf-8')
+        const meta = parseFrontmatter(content)
+        if (meta.name && meta.description) {
+          entries.push({
+            name: meta.name,
+            description: meta.description,
+            location: skillMdPath,
+            source,
+          })
+        } else {
+          log.warn(`Skipping skill ${dir.name}: missing name or description in frontmatter`)
+        }
+      } catch {
+        // SKILL.md doesn't exist or is unreadable — skip silently
+      }
+    }
+  } catch {
+    // directory doesn't exist — that's fine
+  }
+  return entries
 }
 
 /* ------------------------------------------------------------------ */
