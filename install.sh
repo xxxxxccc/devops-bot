@@ -117,9 +117,9 @@ download_release() {
   # Preserve user data across upgrades
   if [ -d "$INSTALL_DIR" ]; then
     info "Upgrading existing installation (preserving data & config)..."
-    # Back up user data
     [ -d "$INSTALL_DIR/data" ]       && mv "$INSTALL_DIR/data"       "$tmpdir/data_bak"
     [ -d "$INSTALL_DIR/models" ]     && mv "$INSTALL_DIR/models"     "$tmpdir/models_bak"
+    [ -d "$INSTALL_DIR/skills" ]     && mv "$INSTALL_DIR/skills"     "$tmpdir/skills_bak"
     [ -f "$INSTALL_DIR/.env.local" ] && cp "$INSTALL_DIR/.env.local" "$tmpdir/env_bak"
     rm -rf "$INSTALL_DIR"
   fi
@@ -131,6 +131,15 @@ download_release() {
   [ -d "$tmpdir/data_bak" ]   && mv "$tmpdir/data_bak"   "$INSTALL_DIR/data"
   [ -d "$tmpdir/models_bak" ] && mv "$tmpdir/models_bak" "$INSTALL_DIR/models"
   [ -f "$tmpdir/env_bak" ]    && mv "$tmpdir/env_bak"    "$INSTALL_DIR/.env.local"
+
+  # Merge skills: bundled skills are updated, user-added skills are preserved
+  if [ -d "$tmpdir/skills_bak" ]; then
+    for user_skill in "$tmpdir/skills_bak"/*/; do
+      skill_name="$(basename "$user_skill")"
+      [ -d "$INSTALL_DIR/skills/$skill_name" ] && continue
+      cp -r "$user_skill" "$INSTALL_DIR/skills/$skill_name"
+    done
+  fi
 
   trap - EXIT
   rm -rf "$tmpdir"
@@ -154,9 +163,29 @@ install_from_local() {
   [ -f "$INSTALL_DIR/.env.local" ] && cp "$INSTALL_DIR/.env.local" "$tmpdir/env_bak"
 
   # Copy runtime artefacts only (no src, no .git)
-  rm -rf "$INSTALL_DIR/dist" "$INSTALL_DIR/skills"
+  rm -rf "$INSTALL_DIR/dist"
   cp -r "$SCRIPT_DIR/dist"          "$INSTALL_DIR/dist"
-  [ -d "$SCRIPT_DIR/skills" ]      && cp -r "$SCRIPT_DIR/skills" "$INSTALL_DIR/skills"
+
+  # Merge skills: update bundled, preserve user-added
+  if [ -d "$SCRIPT_DIR/skills" ]; then
+    # Save user-added skills (those not in the new release)
+    local user_skills_tmp
+    user_skills_tmp="$(mktemp -d)"
+    if [ -d "$INSTALL_DIR/skills" ]; then
+      for existing in "$INSTALL_DIR/skills"/*/; do
+        sname="$(basename "$existing")"
+        [ -d "$SCRIPT_DIR/skills/$sname" ] && continue
+        cp -r "$existing" "$user_skills_tmp/$sname"
+      done
+    fi
+    rm -rf "$INSTALL_DIR/skills"
+    cp -r "$SCRIPT_DIR/skills" "$INSTALL_DIR/skills"
+    # Restore user-added skills
+    for us in "$user_skills_tmp"/*/; do
+      [ -d "$us" ] && cp -r "$us" "$INSTALL_DIR/skills/"
+    done
+    rm -rf "$user_skills_tmp"
+  fi
   cp    "$SCRIPT_DIR/package.json"   "$INSTALL_DIR/package.json"
   cp    "$SCRIPT_DIR/.env.example"   "$INSTALL_DIR/.env.example"
   cp    "$SCRIPT_DIR/README.md"      "$INSTALL_DIR/README.md"
