@@ -1,6 +1,6 @@
 {
   "name": "devops-bot",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "description": "Chat-driven AI coding agent — multi-project support, three-tier task execution, automated code changes and pull requests",
   "type": "module",
   "main": "dist/index.js",
