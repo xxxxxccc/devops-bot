@@ -82,7 +82,7 @@ echo ""
 # 2. Download latest release (or copy from local dev checkout)
 # =============================================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || echo "")"
 
 fetch_latest_version() {
   local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
