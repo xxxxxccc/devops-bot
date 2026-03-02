@@ -5,25 +5,32 @@ domain-specific guidance that the AI agent can load on demand.
 
 ## How it works
 
-1. At startup, the skill scanner reads all subdirectories under `skills/`
-2. Each skill's `name` and `description` (from YAML frontmatter) are injected
-   into the executor system prompt as a compact list
-3. Before starting a task, the executor scans descriptions and decides whether
-   a skill applies
-4. If a skill applies, the executor reads the full `SKILL.md` via `read_file`
-   and follows its instructions
+Skills are loaded from two locations with priority-based merging:
+
+1. **Bundled skills** (`devops-bot/skills/`) — shipped with the bot installation
+2. **Workspace skills** (`~/.devops-bot/skills/`) — user-installed, higher priority
+
+At startup, the skill scanner reads both directories. Each skill's `name` and
+`description` (from YAML frontmatter) are injected into the executor system
+prompt as a compact list. Before starting a task, the executor scans
+descriptions and decides whether a skill applies. If it does, the executor
+reads the full `SKILL.md` via `read_file` and follows its instructions.
+
+When the same skill name exists in both locations, the workspace version wins.
 
 ## Adding a new skill
 
-Create a subdirectory with a `SKILL.md` file:
+Create a subdirectory with a `SKILL.md` file in the workspace skills directory:
 
 ```
-skills/
+~/.devops-bot/skills/
 └── my-skill/
     ├── SKILL.md          # Required — frontmatter + instructions
     ├── references/       # Optional — extra docs the AI can read
     └── scripts/          # Optional — helper scripts
 ```
+
+You can also use the `create_skill` tool via chat to create skills interactively.
 
 ### SKILL.md format
 

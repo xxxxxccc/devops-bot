@@ -1,7 +1,7 @@
 {
   "name": "devops-bot",
   "version": "0.0.34",
-  "description": "Chat-driven AI coding agent — discuss requirements in group chat, get automated code changes and pull requests",
+  "description": "Chat-driven AI coding agent — multi-project support, three-tier task execution, automated code changes and pull requests",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -58,7 +58,7 @@
     "mcp",
     "chat-driven"
   ],
-  "author": "DevOps Bot Contributors",
+  "author": "xxxxxccc",
   "repository": {
     "type": "git",
     "url": "https://github.com/xxxxxccc/devops-bot.git"

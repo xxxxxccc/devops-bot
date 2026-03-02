@@ -1,6 +1,5 @@
 /**
- * 任务持久化存储
- * 使用 JSON 文件存储任务数据
+ * Task persistent storage — JSON file backed.
  */
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -25,15 +24,9 @@ export class TaskStore {
     this.filePath = options.filePath || DEFAULT_DATA_PATH
   }
 
-  /**
-   * 初始化存储，加载已有数据
-   */
   async init(): Promise<void> {
     try {
-      // 确保目录存在
       await mkdir(dirname(this.filePath), { recursive: true })
-
-      // 尝试加载已有数据
       const content = await readFile(this.filePath, 'utf-8')
       const data = JSON.parse(content) as Task[]
 
@@ -43,7 +36,6 @@ export class TaskStore {
 
       console.log(`[TaskStore] Loaded ${this.tasks.size} tasks from ${this.filePath}`)
     } catch (error) {
-      // 文件不存在，使用空数据
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         console.log('[TaskStore] No existing data file, starting fresh')
         await this.save()
@@ -53,40 +45,30 @@ export class TaskStore {
     }
   }
 
-  /**
-   * 获取所有任务
-   */
+  /** Get all tasks sorted by creation date (newest first). */
   getAll(): Task[] {
     return Array.from(this.tasks.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     )
   }
 
-  /**
-   * 根据状态筛选任务
-   */
+  /** Filter tasks by status. */
   getByStatus(status: Task['status']): Task[] {
     return this.getAll().filter((t) => t.status === status)
   }
 
-  /**
-   * 获取单个任务
-   */
+  /** Get a single task by ID. */
   get(id: string): Task | undefined {
     return this.tasks.get(id)
   }
 
-  /**
-   * 创建或更新任务
-   */
+  /** Create or overwrite a task. */
   set(task: Task): void {
     this.tasks.set(task.id, task)
     this.scheduleSave()
   }
 
-  /**
-   * 更新任务
-   */
+  /** Partially update a task. */
   update(id: string, updates: Partial<Task>): Task | undefined {
     const task = this.tasks.get(id)
     if (!task) return undefined
@@ -101,9 +83,7 @@ export class TaskStore {
     return updated
   }
 
-  /**
-   * 删除任务
-   */
+  /** Delete a task by ID. */
   delete(id: string): boolean {
     const result = this.tasks.delete(id)
     if (result) {
@@ -112,9 +92,7 @@ export class TaskStore {
     return result
   }
 
-  /**
-   * 获取统计信息
-   */
+  /** Get aggregate stats. */
   getStats() {
     const all = this.getAll()
     return {
@@ -126,9 +104,7 @@ export class TaskStore {
     }
   }
 
-  /**
-   * 延迟保存（防抖）
-   */
+  /** Debounced save. */
   private scheduleSave(): void {
     this.dirty = true
     if (this.saveTimer) {
@@ -136,12 +112,10 @@ export class TaskStore {
     }
     this.saveTimer = setTimeout(() => {
       this.save().catch(console.error)
-    }, 1000) // 1秒后保存
+    }, 1000)
   }
 
-  /**
-   * 立即保存到文件
-   */
+  /** Flush to disk immediately. */
   async save(): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
@@ -159,9 +133,7 @@ export class TaskStore {
     }
   }
 
-  /**
-   * 关闭存储（保存未保存的数据）
-   */
+  /** Close the store, flushing pending writes. */
   async close(): Promise<void> {
     if (this.dirty) {
       await this.save()
@@ -169,7 +141,7 @@ export class TaskStore {
   }
 }
 
-// 创建全局实例
+// Global singleton
 let globalStore: TaskStore | null = null
 
 export async function getTaskStore(options?: TaskStoreOptions): Promise<TaskStore> {

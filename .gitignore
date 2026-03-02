@@ -11,6 +11,9 @@ dist/
 .env.local
 .env.*.local
 
+# Private keys (GitHub App, etc.)
+*.pem
+
 # Logs
 logs/
 *.log

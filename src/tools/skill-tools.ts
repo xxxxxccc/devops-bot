@@ -8,6 +8,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import * as z from 'zod'
 import { type Tool, defineTool } from '../core/types.js'
 import { createLogger } from '../infra/logger.js'
@@ -16,8 +17,7 @@ const log = createLogger('skill-tools')
 
 // ============ Constants ============
 
-/** Default skills directory relative to the project root */
-const SKILLS_DIR = 'skills'
+const DEFAULT_WORKSPACE_DIR = join(homedir(), '.devops-bot')
 
 // ============ Schemas ============
 
@@ -60,17 +60,18 @@ const createSkillSchema = z.object({
 // ============ Helpers ============
 
 /**
- * Get the skills directory path for a project
+ * Get the workspace-level skills directory (~/.devops-bot/skills/)
  */
-function getSkillsDir(projectPath: string): string {
-  return join(projectPath, SKILLS_DIR)
+function getSkillsDir(): string {
+  const workspaceDir = process.env.WORKSPACE_DIR || DEFAULT_WORKSPACE_DIR
+  return join(workspaceDir, 'skills')
 }
 
 /**
  * Ensure the skills directory exists
  */
-function ensureSkillsDir(projectPath: string): string {
-  const skillsDir = getSkillsDir(projectPath)
+function ensureSkillsDir(): string {
+  const skillsDir = getSkillsDir()
   if (!existsSync(skillsDir)) {
     mkdirSync(skillsDir, { recursive: true })
   }
@@ -200,8 +201,8 @@ function extractSkillName(source: string): string {
 /**
  * List installed skills in the project
  */
-function listInstalledSkills(projectPath: string): { name: string; description: string }[] {
-  const skillsDir = getSkillsDir(projectPath)
+function listInstalledSkills(): { name: string; description: string }[] {
+  const skillsDir = getSkillsDir()
   if (!existsSync(skillsDir)) {
     return []
   }
@@ -254,8 +255,8 @@ export const listInstalledSkillsTool = defineTool({
   category: 'skill',
   description: 'List all skills currently installed in the project.',
   schema: listInstalledSkillsSchema,
-  async execute(_args, context) {
-    const skills = listInstalledSkills(context.projectPath)
+  async execute() {
+    const skills = listInstalledSkills()
 
     if (skills.length === 0) {
       return 'No skills installed yet. Use install_skill to add skills to the project.'
@@ -275,8 +276,8 @@ export const installSkillTool = defineTool({
   description:
     'Install a skill from the skills.sh ecosystem or GitHub. Use this when user provides a skills.sh link, GitHub path, or asks to install a known external skill.',
   schema: installSkillSchema,
-  async execute(args, context) {
-    const skillsDir = ensureSkillsDir(context.projectPath)
+  async execute(args) {
+    const skillsDir = ensureSkillsDir()
     const skillName = args.name || extractSkillName(args.source)
     const targetPath = join(skillsDir, skillName)
 
@@ -318,8 +319,8 @@ export const createSkillTool = defineTool({
   description:
     'Create a custom skill from scratch. Use this when: 1) user wants to summarize past conversations/decisions into a skill, 2) user provides SKILL.md-like content to add, 3) user describes a workflow or guideline they want to codify. IMPORTANT: Before calling, first read skills/skill-creator/SKILL.md for best practices if it exists. Only call when you have ALL required info (name, description with WHAT+WHEN triggers, content). If info is incomplete, ask user first.',
   schema: createSkillSchema,
-  async execute(args, context) {
-    const skillsDir = ensureSkillsDir(context.projectPath)
+  async execute(args) {
+    const skillsDir = ensureSkillsDir()
 
     // Validate name format (kebab-case)
     const namePattern = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/

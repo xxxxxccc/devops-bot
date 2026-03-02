@@ -432,33 +432,65 @@ configure_figma() {
   fi
 }
 
-# --- Helper: prompt for GitHub token with step-by-step guide ---
-prompt_github_token() {
+# --- Helper: prompt for GitHub App or PAT setup ---
+prompt_github_auth() {
   echo ""
-  echo "  To create a GitHub Fine-grained Personal Access Token:"
+  echo "  Choose GitHub authentication method:"
   echo ""
-  echo "    1. Go to: ${BLUE}https://github.com/settings/tokens?type=beta${NC}"
-  echo "    2. Click 'Generate new token'"
-  echo "    3. Under 'Repository access', select your target repository"
-  echo "    4. Under 'Permissions → Repository permissions', enable:"
-  echo "       • ${GREEN}Pull requests${NC}: Read and write"
-  echo "       (git push uses your existing SSH key / credential — no other permissions needed)"
-  echo "    5. Click 'Generate token' and paste it below"
+  echo -e "    ${BLUE}1)${NC} GitHub App (recommended) — auto-managed tokens, org-friendly"
+  echo -e "    ${BLUE}2)${NC} Personal Access Token (PAT) — simpler but requires manual token management"
+  echo -e "    ${BLUE}3)${NC} Skip"
   echo ""
-  echo -ne "${YELLOW}GitHub Token (Enter to skip): ${NC}"
-  read -r TOKEN_VAL
-  if [ -n "$TOKEN_VAL" ]; then
-    echo "GITHUB_TOKEN=$TOKEN_VAL" >> "$ENV_FILE"
-    success "GitHub token configured — PRs will be auto-created"
-  else
-    warn "Skipped — branches will be pushed but PRs won't be created automatically"
-    info "Add GITHUB_TOKEN to .env.local later to enable PR creation"
-  fi
+  echo -ne "${YELLOW}Choose [1]: ${NC}"
+  read -r AUTH_CHOICE
+
+  case "$AUTH_CHOICE" in
+    2)
+      echo ""
+      echo "  To create a GitHub Fine-grained Personal Access Token:"
+      echo "    1. Go to: ${BLUE}https://github.com/settings/tokens?type=beta${NC}"
+      echo "    2. Under 'Permissions', enable: Pull requests (R+W), Issues (R+W)"
+      echo ""
+      echo -ne "${YELLOW}GitHub Token (Enter to skip): ${NC}"
+      read -r TOKEN_VAL
+      if [ -n "$TOKEN_VAL" ]; then
+        echo "GITHUB_TOKEN=$TOKEN_VAL" >> "$ENV_FILE"
+        success "GitHub PAT configured"
+      else
+        warn "Skipped — add GITHUB_TOKEN to .env.local later"
+      fi
+      ;;
+    3)
+      info "Skipped — configure GitHub auth in .env.local later"
+      ;;
+    *)
+      echo ""
+      echo "  To create a GitHub App:"
+      echo "    1. Go to: ${BLUE}https://github.com/settings/apps/new${NC}"
+      echo "    2. Set permissions: Contents (R+W), Pull requests (R+W), Issues (R+W)"
+      echo "    3. Generate a private key and save the PEM file"
+      echo "    4. Install the App on your org/repos"
+      echo ""
+      echo -ne "${YELLOW}GitHub App ID: ${NC}"
+      read -r APP_ID
+      echo -ne "${YELLOW}Private key PEM file path: ${NC}"
+      read -r KEY_PATH
+
+      if [ -n "$APP_ID" ] && [ -n "$KEY_PATH" ]; then
+        echo "GITHUB_APP_ID=$APP_ID" >> "$ENV_FILE"
+        echo "GITHUB_APP_PRIVATE_KEY_PATH=$KEY_PATH" >> "$ENV_FILE"
+        success "GitHub App configured"
+      else
+        warn "Incomplete — set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH in .env.local"
+      fi
+      ;;
+  esac
 }
 
 # --- Optional: Git Platform Token (for auto-creating PRs/MRs) ---
 configure_git_token() {
-  if grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null \
+  if grep -q "^GITHUB_APP_ID=.\+" "$ENV_FILE" 2>/dev/null \
+     || grep -q "^GITHUB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null \
      || grep -q "^GITLAB_TOKEN=.\+" "$ENV_FILE" 2>/dev/null; then
     return 0
   fi
@@ -497,9 +529,9 @@ configure_git_token() {
     return 0
   fi
 
-  # GitHub — need token
+  # GitHub — need auth
   if [ "$DETECTED_PLATFORM" = "github" ]; then
-    prompt_github_token
+    prompt_github_auth
     return 0
   fi
 
@@ -508,7 +540,7 @@ configure_git_token() {
   read -r GIT_PLATFORM
   case "$GIT_PLATFORM" in
     github)
-      prompt_github_token
+      prompt_github_auth
       ;;
     gitlab)
       success "GitLab — PRs will be created via push options (no token needed)"

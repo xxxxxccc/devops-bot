@@ -66,7 +66,7 @@ export class SlackChannel implements IMPlatform {
           error: err instanceof Error ? err.message : String(err),
         })
         try {
-          await say(`处理消息时出错: ${err.message || '未知错误'}`)
+          await say(`Error processing message: ${err.message || 'Unknown error'}`)
         } catch {
           // Ignore
         }

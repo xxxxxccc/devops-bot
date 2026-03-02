@@ -26,7 +26,7 @@ interface CLIOptions {
 
 function parseArgs(args: string[]): { command: string; options: CLIOptions } {
   const options: CLIOptions = {}
-  let command = 'start' // 默认命令
+  let command = 'start'
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -89,6 +89,7 @@ Environment Variables:
   FEISHU_APP_SECRET       Feishu bot App Secret
   SLACK_BOT_TOKEN         Slack bot token
   SLACK_APP_TOKEN         Slack app token (for Socket Mode)
+  APPROVAL_POLL_INTERVAL_MS  Approval poll interval in ms (default: 1800000)
 
 Examples:
   # Start server (Feishu bot connects automatically)
@@ -126,27 +127,35 @@ async function startServer(options: CLIOptions) {
 
   const { WebhookServer } = await import('./webhook/server.js')
 
+  const projectPath = options.project || process.env.TARGET_PROJECT_PATH || undefined
   const config = {
     port: options.port || parseInt(process.env.WEBHOOK_PORT || '3200', 10),
     secret: process.env.WEBHOOK_SECRET || 'dev-secret',
-    projectPath: options.project || process.env.TARGET_PROJECT_PATH || process.cwd(),
+    projectPath,
+    maxConcurrentTasks: parseInt(process.env.MAX_CONCURRENT_TASKS || '3', 10),
   }
+
+  const isMultiProject = !projectPath
+  const aiProvider = process.env.AI_PROVIDER || 'anthropic'
+  const taskModel = process.env.TASK_MODEL || 'claude-opus-4-5-20251101'
+  const imPlatform = process.env.IM_PLATFORM || 'feishu'
+  const authMode = process.env.GITHUB_APP_ID ? 'GitHub App' : 'PAT'
 
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                    DevOps Bot                               ║
 ╚══════════════════════════════════════════════════════════════╝
 `)
-  const aiProvider = process.env.AI_PROVIDER || 'anthropic'
-  const taskModel = process.env.TASK_MODEL || 'claude-opus-4-5-20251101'
-  const imPlatform = process.env.IM_PLATFORM || 'feishu'
-
-  console.log(`📁 Project:  ${config.projectPath}`)
+  console.log(
+    `📁 Mode:     ${isMultiProject ? 'Multi-project (git URL)' : `Single-project: ${projectPath}`}`,
+  )
   console.log(`🔑 API Key:  ${aiApiKey.slice(0, 10)}...`)
   console.log(`🤖 Provider: ${aiProvider}`)
   console.log(`🤖 Task AI:  ${taskModel}`)
   console.log(`🧠 Router:   ${process.env.DISPATCHER_MODEL || 'claude-sonnet-4-5-20250929'}`)
   console.log(`💬 IM:       ${imPlatform}`)
+  console.log(`🔐 Auth:     ${authMode}`)
+  console.log(`⚡ Parallel:  max ${config.maxConcurrentTasks} tasks`)
   console.log('')
 
   const server = new WebhookServer(config)
@@ -163,6 +172,11 @@ async function startServer(options: CLIOptions) {
 
     const platform = await createPlatform()
     const dispatcher = new Dispatcher(platform, server)
+
+    const approvalStore = server.getApprovalStore()
+    if (approvalStore) {
+      dispatcher.setApprovalStore(approvalStore)
+    }
 
     server.setIMPlatform(platform)
 

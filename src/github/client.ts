@@ -1,0 +1,373 @@
+/**
+ * GitHub Client — unified API client using GitHub App or PAT authentication.
+ *
+ * Provides typed wrappers for common GitHub API operations (PRs, Issues, etc.)
+ * and an authenticated git remote URL for push operations.
+ *
+ * Authentication priority:
+ *   1. GitHub App (installation token) — if GITHUB_APP_ID is configured
+ *   2. Personal Access Token (GITHUB_TOKEN / GH_TOKEN) — fallback
+ */
+
+import { createLogger } from '../infra/logger.js'
+import type { GitHubAppAuth } from './app-auth.js'
+
+const log = createLogger('github-client')
+
+export interface GitHubPROptions {
+  title: string
+  body: string
+  head: string
+  base: string
+  draft?: boolean
+}
+
+export interface GitHubIssueOptions {
+  title: string
+  body: string
+  labels?: string[]
+}
+
+export interface GitHubCreatedResource {
+  url: string
+  number: number
+}
+
+export class GitHubClient {
+  private appAuth: GitHubAppAuth | null
+  private patToken: string | undefined
+  /** HTTP status from the most recent apiGet call (for 404 detection). */
+  private lastStatus = 0
+
+  constructor(appAuth: GitHubAppAuth | null) {
+    this.appAuth = appAuth
+    this.patToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || undefined
+  }
+
+  get isAvailable(): boolean {
+    return this.appAuth !== null || this.patToken !== undefined
+  }
+
+  /**
+   * Get an authorization token for a specific owner/repo.
+   * Uses App installation token if available, otherwise PAT.
+   */
+  async getToken(owner: string, repo: string): Promise<string | undefined> {
+    if (this.appAuth) {
+      try {
+        return await this.appAuth.getInstallationToken(owner, repo)
+      } catch (err) {
+        log.warn('App token failed, falling back to PAT', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    return this.patToken
+  }
+
+  /**
+   * Get an authenticated HTTPS remote URL for git push.
+   * Returns undefined if no token is available.
+   */
+  async getAuthenticatedRemoteUrl(
+    owner: string,
+    repo: string,
+    host = 'github.com',
+  ): Promise<string | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+    return `https://x-access-token:${token}@${host}/${owner}/${repo}.git`
+  }
+
+  async createPR(
+    owner: string,
+    repo: string,
+    opts: GitHubPROptions,
+    host = 'github.com',
+  ): Promise<GitHubCreatedResource | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+
+    return this.apiPost<GitHubCreatedResource>(
+      `${apiBase}/repos/${owner}/${repo}/pulls`,
+      token,
+      {
+        title: opts.title,
+        body: opts.body,
+        head: opts.head,
+        base: opts.base,
+        draft: opts.draft ?? false,
+      },
+      (data) => ({
+        url: data.html_url as string,
+        number: data.number as number,
+      }),
+      'createPR',
+    )
+  }
+
+  async createIssue(
+    owner: string,
+    repo: string,
+    opts: GitHubIssueOptions,
+    host = 'github.com',
+  ): Promise<GitHubCreatedResource | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+
+    return this.apiPost<GitHubCreatedResource>(
+      `${apiBase}/repos/${owner}/${repo}/issues`,
+      token,
+      {
+        title: opts.title,
+        body: opts.body,
+        labels: opts.labels ?? [],
+      },
+      (data) => ({
+        url: data.html_url as string,
+        number: data.number as number,
+      }),
+      'createIssue',
+    )
+  }
+
+  /** List reactions on an issue. Returns content + user login. */
+  async listIssueReactions(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    host = 'github.com',
+  ): Promise<Array<{ content: string; user: string }>> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return []
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const url = `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/reactions?per_page=100`
+
+    const data = await this.apiGet<Array<{ content: string; user: { login: string } }>>(
+      url,
+      token,
+      'listIssueReactions',
+    )
+    if (!data) return []
+    return data.map((r) => ({ content: r.content, user: r.user?.login ?? '' }))
+  }
+
+  /**
+   * Fetch an issue's state, body, and all comments.
+   * Used to build the full discussion context when an approval is detected.
+   * Returns `{ notFound: true }` when the issue has been deleted (404/410).
+   */
+  async getIssueWithComments(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    host = 'github.com',
+  ): Promise<
+    | {
+        notFound?: false
+        state: string
+        body: string
+        comments: Array<{ user: string; body: string; createdAt: string }>
+      }
+    | { notFound: true }
+    | undefined
+  > {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+
+    const issue = await this.apiGet<{ state: string; body: string | null }>(
+      `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}`,
+      token,
+      'getIssue',
+    )
+    if (!issue) {
+      if (this.lastStatus === 404 || this.lastStatus === 410) return { notFound: true }
+      return undefined
+    }
+
+    const rawComments =
+      (await this.apiGet<
+        Array<{ user: { login: string } | null; body: string | null; created_at: string }>
+      >(
+        `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`,
+        token,
+        'getIssueComments',
+      )) ?? []
+
+    return {
+      state: issue.state ?? 'open',
+      body: issue.body ?? '',
+      comments: rawComments
+        .filter((c): c is typeof c & {} => c != null)
+        .map((c) => ({
+          user: c.user?.login ?? 'unknown',
+          body: c.body ?? '',
+          createdAt: c.created_at ?? '',
+        })),
+    }
+  }
+
+  /** List open issues filtered by label. Returns issue number, title, and labels. */
+  async listOpenIssuesWithLabel(
+    owner: string,
+    repo: string,
+    label: string,
+    host = 'github.com',
+  ): Promise<Array<{ number: number; title: string; labels: string[]; html_url: string }>> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return []
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const url = `${apiBase}/repos/${owner}/${repo}/issues?labels=${encodeURIComponent(label)}&state=open&per_page=30`
+
+    const data = await this.apiGet<
+      Array<{
+        number: number
+        title: string
+        labels: Array<{ name: string }>
+        html_url: string
+        pull_request?: unknown
+      }>
+    >(url, token, 'listOpenIssuesWithLabel')
+
+    if (!data) return []
+    return data
+      .filter((i) => !i.pull_request)
+      .map((i) => ({
+        number: i.number,
+        title: i.title,
+        labels: (i.labels ?? []).map((l) => l.name),
+        html_url: i.html_url,
+      }))
+  }
+
+  /** Post a comment on an issue. */
+  async createIssueComment(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: string,
+    host = 'github.com',
+  ): Promise<boolean> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+
+    const result = await this.apiPost(
+      `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
+      token,
+      { body },
+      () => ({}),
+      'createIssueComment',
+    )
+    return result !== undefined
+  }
+
+  private async apiGet<T>(url: string, token: string, label: string): Promise<T | undefined> {
+    this.lastStatus = 0
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      })
+
+      this.lastStatus = response.status
+      if (!response.ok) {
+        const errBody = await response.text()
+        log.error(`GitHub API ${label} error`, {
+          status: response.status,
+          body: errBody.slice(0, 500),
+        })
+        return undefined
+      }
+
+      return (await response.json()) as T
+    } catch (error) {
+      log.error(`GitHub API ${label} request failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
+  private async apiPost<T>(
+    url: string,
+    token: string,
+    body: Record<string, unknown>,
+    transform: (data: Record<string, unknown>) => T,
+    label: string,
+  ): Promise<T | undefined> {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const errBody = await response.text()
+        log.error(`GitHub API ${label} error`, {
+          status: response.status,
+          body: errBody.slice(0, 500),
+        })
+        return undefined
+      }
+
+      const data = (await response.json()) as Record<string, unknown>
+      const result = transform(data)
+      log.info(`GitHub API ${label} success`, { url: (result as any).url })
+      return result
+    } catch (error) {
+      log.error(`GitHub API ${label} request failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Singleton management                                               */
+/* ------------------------------------------------------------------ */
+
+let _client: GitHubClient | null = null
+
+/**
+ * Get the shared GitHubClient instance.
+ * Initializes GitHub App auth if configured, otherwise uses PAT.
+ */
+export async function getGitHubClient(): Promise<GitHubClient> {
+  if (_client) return _client
+
+  const { loadGitHubAppConfig, GitHubAppAuth } = await import('./app-auth.js')
+  const appConfig = loadGitHubAppConfig()
+  const appAuth = appConfig ? new GitHubAppAuth(appConfig) : null
+
+  if (appAuth) {
+    log.info('GitHub Client initialized with App authentication')
+  } else if (process.env.GITHUB_TOKEN || process.env.GH_TOKEN) {
+    log.info('GitHub Client initialized with PAT authentication')
+  } else {
+    log.info('GitHub Client initialized without authentication')
+  }
+
+  _client = new GitHubClient(appAuth)
+  return _client
+}

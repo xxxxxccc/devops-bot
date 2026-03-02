@@ -26,24 +26,31 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 
 ## Project Context
 
-- This tool operates on a **separate target project** at `TARGET_PROJECT_PATH`
+- Supports **multi-project mode** — projects added via chat (`add_project` intent), auto-cloned to `~/.devops-bot/repos/`
+- Falls back to **single-project mode** if `TARGET_PROJECT_PATH` is set
 - IM bot (Feishu or Slack) is the **primary user interface** — there is no web frontend
 - Two AI layers: **fast model** (dispatcher) and **powerful model** (task executor) — provider-agnostic
-- AI providers configured via `AI_PROVIDER` + `AI_API_KEY` (supports Anthropic, OpenAI, and compatible APIs)
-- IM platform configured via `IM_PLATFORM` (supports `feishu` and `slack`)
+- **Three-tier task execution**: `execute_task` (low risk, immediate), `propose_task` (medium risk, needs approval via Issue AI synthesis), `create_issue` (high risk, discussion only)
+- **Issue AI**: Independent AI layer that reads full issue context (body + comments) and synthesizes actionable tasks; also scans external issues with configured labels
+- **GitHub App authentication** for GitHub operations (PRs, Issues, git push); PAT fallback supported
+- Skills stored at **workspace level** (`~/.devops-bot/skills/`), shared across all projects
 - Memory persists in `data/memory/` using **SQLite** (primary) + **JSONL** exports (AI browsing)
 - Configuration lives in `.env.local` (never committed)
 
 ## Security Rules
 
-- **NEVER** commit `.env`, `.env.local`, or API keys
+- **NEVER** commit `.env`, `.env.local`, API keys, or GitHub App private keys
 - Shell tool blocks dangerous commands (`rm -rf /`, `sudo`, `shutdown`, etc.)
 - Git operations must not force push or delete protected branches
 - Validate all external inputs before processing
 - All AI-generated changes stay on working branch — human reviews before merge
+- GitHub App private keys must be stored securely outside the repository
 
 ## Detailed Guidelines
 
 - [Architecture & Data Flow](.agents/architecture.md) — two-layer AI, modules, platform abstraction
 - [Memory System](.agents/memory-system.md) — SQLite + JSONL storage, conversation splitting, AI browsing
 - [Code Conventions](.agents/code-conventions.md) — TypeScript patterns, Biome rules, file structure
+- GitHub App auth: `src/github/app-auth.ts`, `src/github/client.ts`
+- Multi-project: `src/project/registry.ts`, `src/project/repo-manager.ts`, `src/project/resolver.ts`
+- Issue AI & Approval: `src/approval/issue-ai.ts`, `src/approval/poller.ts`, `src/approval/store.ts`

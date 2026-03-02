@@ -54,7 +54,7 @@ export type IMPlatformType = 'feishu' | 'slack'
 
 /** Options for sending messages — allows replying in a thread */
 export interface SendOptions {
-  /** Reply to this message ID to create/continue a thread (Feishu话题, Slack thread) */
+  /** Reply to this message ID to create/continue a thread */
   replyTo?: string
 }
 

@@ -74,7 +74,8 @@ export function getDispatcherMemoryConfig(): DispatcherMemoryConfig {
 export function hasMemoryIntent(text: string): boolean {
   const normalized = text.toLowerCase()
   return (
-    /(之前|上次|历史|记录|回顾|记得|有没有做过|做过吗|曾经)/.test(text) ||
-    /\b(memory|history|previous|earlier|before|already done|did we)\b/.test(normalized)
+    /(\u4e4b\u524d|\u4e0a\u6b21|\u5386\u53f2|\u8bb0\u5f55|\u56de\u987e|\u8bb0\u5f97|\u6709\u6ca1\u6709\u505a\u8fc7|\u505a\u8fc7\u5417|\u66fe\u7ecf)/.test(
+      text,
+    ) || /\b(memory|history|previous|earlier|before|already done|did we)\b/.test(normalized)
   )
 }

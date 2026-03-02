@@ -295,7 +295,7 @@ export class FeishuChannel implements IMPlatform {
       try {
         const chatId = eventData?.message?.chat_id
         if (chatId) {
-          await this.sendText(chatId, `处理消息时出错: ${err.message || '未知错误'}`)
+          await this.sendText(chatId, `Error processing message: ${err.message || 'Unknown error'}`)
         }
       } catch {
         // Ignore
@@ -370,7 +370,7 @@ export class FeishuChannel implements IMPlatform {
         error: err instanceof Error ? err.message : String(err),
       })
       try {
-        await this.sendText(chatId, `处理消息时出错: ${err.message || '未知错误'}`)
+        await this.sendText(chatId, `Error processing message: ${err.message || 'Unknown error'}`)
       } catch {
         // Ignore
       }

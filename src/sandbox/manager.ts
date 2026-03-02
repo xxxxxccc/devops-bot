@@ -11,7 +11,7 @@
  * provided via SANDBOX_SETUP_COMMAND for non-standard projects.
  */
 
-import { execSync } from 'node:child_process'
+import { exec } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { simpleGit } from 'simple-git'
@@ -136,6 +136,8 @@ export class SandboxManager {
     sandbox: Sandbox,
     taskTitle: string,
     taskDescription?: string,
+    createdBy?: string,
+    issueNumber?: number,
   ): Promise<{ prUrl?: string }> {
     const hasChanges = await this.branchHasNewCommits(sandbox)
     if (!hasChanges) {
@@ -150,6 +152,8 @@ export class SandboxManager {
       baseBranch: sandbox.baseBranch,
       title: taskTitle,
       description: taskDescription,
+      createdBy,
+      issueNumber,
       draft: this.config.draftPR,
     }
 
@@ -207,10 +211,9 @@ export class SandboxManager {
    *   - cocoapods (Podfile.lock)   → pod install
    */
   private async installDependencies(projectPath: string, worktreePath: string): Promise<void> {
-    // Custom command takes full precedence
     if (this.config.setupCommand) {
       log.info('Running custom sandbox setup command', { command: this.config.setupCommand })
-      this.runSetupCommand(this.config.setupCommand, worktreePath)
+      await this.runSetupCommand(this.config.setupCommand, worktreePath)
       return
     }
 
@@ -222,24 +225,34 @@ export class SandboxManager {
 
     for (const { name, command } of commands) {
       log.info(`Installing ${name} dependencies in sandbox`, { command })
-      this.runSetupCommand(command, worktreePath)
+      await this.runSetupCommand(command, worktreePath)
     }
   }
 
-  private runSetupCommand(command: string, cwd: string): void {
-    try {
-      execSync(command, {
+  private runSetupCommand(command: string, cwd: string): Promise<void> {
+    return new Promise((resolve) => {
+      const child = exec(command, {
         cwd,
         timeout: 300_000, // 5 min
-        stdio: 'pipe',
         env: { ...process.env, CI: '1' },
+        maxBuffer: 10 * 1024 * 1024,
       })
-    } catch (error) {
-      log.warn('Sandbox setup command failed, tools may be unavailable', {
-        command,
-        error: error instanceof Error ? error.message : String(error),
+
+      child.on('close', (code) => {
+        if (code !== 0) {
+          log.warn('Sandbox setup command exited with non-zero code', { command, code })
+        }
+        resolve()
       })
-    }
+
+      child.on('error', (error) => {
+        log.warn('Sandbox setup command failed, tools may be unavailable', {
+          command,
+          error: error.message,
+        })
+        resolve()
+      })
+    })
   }
 
   /**

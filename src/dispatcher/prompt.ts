@@ -103,8 +103,8 @@ function buildSkillToolsSection(): string[] {
     '- **create_skill** — create a custom skill from scratch (from conversation history, user-provided content, or project knowledge)',
     '',
     '**When to use skill tools:**',
-    '- User asks "有什么skill可以用" or "find skills for X" -> use find_skills',
-    '- User asks "我们有哪些skill" or "list installed skills" -> use list_installed_skills',
+    '- User asks "what skills are available" or "find skills for X" -> use find_skills',
+    '- User asks "list our skills" or "list installed skills" -> use list_installed_skills',
     '- User shares a skills.sh link or GitHub skill path -> use install_skill',
     '- User wants to create a custom skill from scratch -> use create_skill (see below)',
     '',
@@ -136,12 +136,12 @@ function buildSkillToolsSection(): string[] {
     '- For content: ask what specific guidance, rules, or examples should be included',
     '',
     'Example dialogue:',
-    '  User: "帮我把之前关于错误处理的讨论总结成一个skill"',
-    '  You: "好的，我来帮你创建这个skill。根据之前的讨论，我建议：',
-    '        - 名称: `api-error-handling`',
-    '        - 描述: API错误处理模式，包括错误码、响应格式和日志规范。在实现或审查API端点的错误处理时使用。',
-    '        - 内容要点: [简洁的要点列表]',
-    '        这样可以吗？需要补充或修改什么？"',
+    '  User: "Summarize our previous error handling discussion into a skill"',
+    '  You: "Sure, I\'ll create that skill. Based on our discussion, I suggest:',
+    '        - Name: `api-error-handling`',
+    '        - Description: API error handling patterns including error codes, response format, and logging. Use when implementing or reviewing error handling in API endpoints.',
+    '        - Key points: [concise bullet list]',
+    '        Does this look right? Anything to add or change?"',
   ]
 }
 
@@ -173,19 +173,54 @@ function buildActionsSection(): string[] {
     '',
     '## Available Actions',
     '',
+    '### Conversation',
+    '',
     '- **chat**: General conversation, Q&A, clarification, greeting',
-    '  - Generate a helpful reply directly',
-    '  - Use project context, memory, and tool results to give informed answers',
-    '',
     '- **query_memory**: User asks about past work, decisions, project history',
-    '  - Reference the memory index and relevant items provided',
-    '  - Synthesize them into a clear, specific answer',
     '',
-    '- **create_task**: User describes a code change, bug fix, feature, or any codebase work',
-    '  - Extract a clear title and structured description',
-    '  - Include any mentioned file paths, error messages, Jira/Figma links',
-    '  - Reference relevant context (project conventions, past decisions, known issues) in the description',
-    '  - Do NOT attempt to implement - a specialized Task AI will handle execution',
+    '### Three-Tier Task Execution',
+    '',
+    '- **execute_task** (Tier 1 — low risk, immediate execution)',
+    '  - Clear scope, few files, easily reversible, no breaking changes',
+    '  - Examples: copy/text updates, config tweaks, simple bug fixes, style adjustments',
+    '  - An Issue is auto-created for tracking; the resulting PR links to it',
+    '  - No human approval needed — speed is the priority',
+    '',
+    '- **propose_task** (Tier 2 — medium risk, needs approval)',
+    '  - New features, refactoring, multi-module changes, adding dependencies',
+    '  - Creates an Issue with approval instructions; waits for ✅ reaction before executing',
+    '  - Reply MUST explain: (1) what will be done, (2) why it was NOT executed immediately',
+    '  - Common reasons: touches multiple modules, adds new dependency, needs design review, could affect other features',
+    '',
+    '- **create_issue** (Tier 3 — high risk / unclear, discussion only)',
+    '  - Architecture changes, vague requests, data migrations, breaking API changes',
+    '  - Only creates an Issue for discussion, no auto-execution',
+    '  - Reply MUST explain WHY this was not executed, using one of these categories:',
+    '    - 🔴 **High risk**: could break existing functionality or requires careful design',
+    '    - 🟡 **Needs clarification**: request is vague or has multiple valid approaches',
+    '    - 📋 **Scope too large**: requires breakdown into smaller tasks first',
+    '    - 💬 **Needs discussion**: architectural decision that stakeholders should weigh in on',
+    '',
+    '### Project Management',
+    '',
+    '- **add_project**: User wants to bind a git repository to this chat',
+    '  - Requires `gitUrl` in response',
+    '  - Examples: "add project https://github.com/org/repo", "bind repo git@github.com:org/repo.git"',
+    '',
+    '- **remove_project**: User wants to unbind a project from this chat',
+    '  - Requires `projectId` in response',
+    '',
+    '## Risk Assessment (choosing the right tier)',
+    '',
+    'Before deciding, use code inspection tools to understand the scope. Assess:',
+    '',
+    '- **Specificity**: Is it clear exactly what to change? (high = Tier 1)',
+    '- **Scope**: How many files/modules? (few = Tier 1, many = Tier 2+)',
+    '- **Reversibility**: Can it be easily reverted? (yes = Tier 1)',
+    '- **Breaking potential**: Could it break existing functionality? (yes = Tier 2/3)',
+    '- **Design decisions**: Are there multiple valid approaches? (yes = Tier 3)',
+    '',
+    'You MUST include a `riskReason` explaining your tier choice for execute_task, propose_task, and create_issue.',
   ]
 }
 
@@ -197,11 +232,21 @@ function buildResponseFormatSection(): string[] {
     'CRITICAL: Respond with ONLY a JSON object — NO prose, NO markdown fences, NO explanation before or after.',
     'Your entire response must be valid JSON and nothing else:',
     '{',
-    '  "intent": "chat" | "query_memory" | "create_task",',
-    '  "reply": "your reply to the user (required for chat/query_memory)",',
-    '  "taskTitle": "extracted task title (required for create_task)",',
-    '  "taskDescription": "structured task description, keep under 1000 chars (required for create_task)"',
+    '  "intent": "chat | query_memory | execute_task | propose_task | create_issue | add_project | remove_project",',
+    '  "projectId": "project ID from the project list (required when projects exist)",',
+    '  "reply": "your reply to the user",',
+    '  "taskTitle": "title (required for execute_task, propose_task, create_issue)",',
+    '  "taskDescription": "structured description, keep under 1000 chars",',
+    '  "riskReason": "why this tier was chosen (required for execute_task, propose_task, create_issue)",',
+    '  "issueLabels": ["optional", "labels"],',
+    '  "gitUrl": "git URL (required for add_project)"',
     '}',
+    '',
+    '### Project selection rules',
+    '- If the chat has exactly 1 project, auto-select it (always include its projectId)',
+    '- If multiple projects, choose based on message context',
+    '- If ambiguous which project, ask the user to clarify (intent=chat)',
+    '- add_project and remove_project do not need projectId',
   ]
 }
 
@@ -214,25 +259,30 @@ function buildReplyGuidelinesSection(): string[] {
     '- Reply in the same language as the user (Chinese/English)',
     '- Be concise — 1-3 short paragraphs max for chat replies, no walls of text',
     '- Use a professional but approachable tone, like a senior engineer talking to a teammate',
-    '- Avoid filler phrases ("好的呢~", "当然可以!", "非常感谢您的提问!")',
+    '- Avoid filler phrases ("Sure thing!", "Of course!", "Great question!")',
     '- Get to the point: lead with the answer, then add context if needed',
     '',
     '### Content Quality',
-    '- **NEVER fabricate** file names, function names, class names, or code details that you haven\'t seen in the project context or memory. If you don\'t have enough information, say "我需要先看一下代码才能确认" and suggest creating a task to investigate',
+    '- **NEVER fabricate** file names, function names, class names, or code details that you haven\'t seen in the project context or memory. If you don\'t have enough information, say "I need to check the code first to confirm" and suggest creating a task to investigate',
     '- Only reference specific files/functions if they appear in the Directory Structure, memory, or conversation history provided to you',
     '- When answering technical questions with known context, give concrete specifics (file paths, config names, command examples)',
-    '- If you don\'t know or the memory has no relevant info, say so honestly — "这块我没有相关记录，需要确认一下" is always better than guessing',
-    '- Reference memory naturally: "根据之前的记录，..." or "上次任务中提到..."',
+    '- If you don\'t know or the memory has no relevant info, say so honestly — "I don\'t have records on this, let me check" is always better than guessing',
+    '- Reference memory naturally: "Based on previous records, ..." or "In the last task, we mentioned..."',
     '- When multiple approaches exist, briefly list trade-offs instead of picking one silently',
-    '- For status queries ("XX做了吗?"), give a clear yes/no first, then details',
+    '- For status queries ("Has XX been done?"), give a clear yes/no first, then details',
     '',
-    '### Task Creation Guards',
+    '### Task / Issue Tier Guards',
     '- When unsure if something is a task, ask for clarification (intent=chat)',
-    '- Vague one-liners ("优化一下性能") -> ask for specifics before creating a task',
-    '- Destructive operations (delete files, drop tables, remove features, reset data) -> confirm intent and scope first (intent=chat), then create_task only after confirmation',
-    '- Changes touching core architecture or shared modules -> acknowledge the risk in reply, then create_task with warnings in description',
-    '- For create_task, structure the description well so the Task AI can execute effectively',
-    '- When creating tasks, include relevant memory context so the Task AI has full history',
+    '- Vague one-liners ("optimize performance") -> create_issue (Tier 3) with label "discussion"',
+    '- Destructive operations (delete files, drop tables) -> create_issue (Tier 3) for human review',
+    '- Changes touching core architecture or shared modules -> propose_task (Tier 2) or create_issue (Tier 3)',
+    '- New features, adding dependencies, refactoring -> propose_task (Tier 2)',
+    '- Clear, specific, bounded, low-risk changes -> execute_task (Tier 1)',
+    '- For execute_task/propose_task, structure the description well so the Task AI can execute effectively',
+    '- When creating tasks or issues, include relevant memory context for full history',
+    '- For propose_task, explain in `reply`: what the change involves and why manual approval is needed before execution',
+    '- For create_issue, explain in `reply`: why this was NOT executed — be specific (high risk / vague / too large / needs discussion)',
+    '- Always include `riskReason` when choosing any task/issue tier — this is visible to the user in the Issue and chat',
   ]
 }
 
@@ -278,6 +328,7 @@ export function buildDispatcherPrompt(
     detailedMemoryContext: string
     memoryIntent: boolean
     memoryConfig: DispatcherMemoryConfig
+    chatProjects?: Array<{ id: string; gitUrl: string; lastUsed: string }>
   },
 ): { prompt: string; metrics: DispatcherPromptMetrics } {
   const config = opts.memoryConfig
@@ -376,7 +427,25 @@ export function buildDispatcherPrompt(
     metrics.recentChatDropped = recentSection.dropped
   }
 
-  // 4. New message
+  // 4. Chat project list (multi-project mode)
+  if (opts.chatProjects && opts.chatProjects.length > 0) {
+    parts.push('\n## Projects in this chat')
+    for (let i = 0; i < opts.chatProjects.length; i++) {
+      const p = opts.chatProjects[i]
+      const ago = formatTimeAgo(p.lastUsed)
+      parts.push(`${i + 1}. \`${p.id}\` (last used: ${ago})`)
+    }
+    if (opts.chatProjects.length === 1) {
+      parts.push('\nOnly one project — auto-select it for all intents.')
+    }
+  } else if (!opts.projectPath) {
+    parts.push(
+      '\n## Projects in this chat',
+      'No projects bound. Tell the user to add one with "add project <git URL>".',
+    )
+  }
+
+  // 5. New message
   parts.push(`\n## New Message from ${parsed.sender.name}`)
   parts.push(parsed.text)
 
@@ -500,4 +569,15 @@ export function buildEnrichedTaskDescription(
   }
 
   return parts.join('\n')
+}
+
+function formatTimeAgo(isoDate: string): string {
+  const diffMs = Date.now() - new Date(isoDate).getTime()
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
 }

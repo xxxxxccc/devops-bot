@@ -13,7 +13,11 @@ Intents:
 |--------|--------|
 | `chat` | Reply directly in IM |
 | `query_memory` | Query memory and reply with context |
-| `create_task` | Extract title/description, enrich with links/files, enqueue execution |
+| `execute_task` | Tier 1: low risk, execute immediately + create tracking Issue |
+| `propose_task` | Tier 2: medium risk, create Issue and wait for polling-based approval (reaction: +1/heart/hooray) |
+| `create_issue` | Tier 3: high risk/unclear, create Issue for discussion only |
+| `add_project` | Bind a git repository to the current chat |
+| `remove_project` | Unbind a project from the current chat |
 
 ### Layer 2 — Task Executor (`src/agent/ai-executor.ts`)
 
@@ -56,7 +60,19 @@ src/
 │   └── prompt.ts
 ├── sandbox/
 │   ├── manager.ts             # Git worktree sandbox lifecycle
-│   └── pr-creator.ts          # Auto PR/MR creation (GitHub/GitLab)
+│   ├── pr-creator.ts          # Auto PR/MR creation (GitHub/GitLab)
+│   └── issue-creator.ts       # Auto Issue creation (GitHub/GitLab)
+├── approval/
+│   ├── store.ts               # SQLite-backed pending approval + processed issue storage
+│   ├── poller.ts              # Polling loop: check reactions, scan repos, route to Issue AI
+│   └── issue-ai.ts            # Lightweight AI: synthesize actionable task from issue context
+├── github/
+│   ├── app-auth.ts            # GitHub App JWT + installation token lifecycle
+│   └── client.ts              # Unified GitHub API client (App or PAT)
+├── project/
+│   ├── registry.ts            # SQLite-backed project registry
+│   ├── repo-manager.ts        # Git clone/sync manager
+│   └── resolver.ts            # Project resolution orchestrator
 ├── memory/
 │   ├── store.ts               # SQLite-backed memory + JSONL export
 │   ├── db.ts                  # SQLite schema/queries + vec/fts
@@ -91,13 +107,35 @@ IM message (Feishu WebSocket / Slack Socket Mode)
        - call AI with read-only tools (provider-agnostic)
        - return intent (chat/query_memory/create_task)
        - send/update IM "thinking" card
-  -> task-runner (for create_task):
-       - enqueue FIFO (single task at a time)
+  -> task-runner (for execute_task / approved propose_task):
+       - enqueue with per-task projectPath
+       - per-project serial, cross-project parallel (max 3 concurrent)
        - execute Layer 2 with MCP in sandbox
        - stream output to SSE
        - update IM task card on completion/failure
        - create Draft PR for human review
        - write task_input/task_result/issue (+ extracted decisions) to memory
+
+  -> approval-poller (runs every APPROVAL_POLL_INTERVAL_MS, default 30min):
+       Path A — bot-created issues:
+       - reads pending_approvals table
+       - checks issue reactions (+1, heart, hooray) — 1 API call per issue
+       - on approval: fetches full issue body + comments
+       - passes context to Issue AI for task synthesis
+       - Issue AI may deem the task infeasible -> posts comment explaining why
+       - if feasible: creates task + posts "task started" comment
+       - sends IM notification in original chat thread
+
+       Path B — external issues (user-created):
+       - scans all registered project repos for open issues with ISSUE_SCAN_LABELS label
+       - filters out already-processed issues (processed_issues table)
+       - checks reactions on remaining issues
+       - approved issues follow the same Issue AI pipeline as Path A
+       - since no IM context exists, notifications are posted as issue comments
+
+       Common:
+       - expires stale pending approvals after 7 days
+       - prevents double-trigger via processed_issues tracking
 ```
 
 ## IM Platform Abstraction
@@ -134,4 +172,12 @@ Adapters translate between neutral types (`AIMessage`, `AIContentBlock`, `AITool
 | `SLACK_APP_TOKEN` | If Slack | Slack app-level token |
 | `WEBHOOK_PORT` | No | HTTP port (default: `3200`) |
 | `WEBHOOK_SECRET` | No | Write API auth secret (default: `dev-secret`) |
+| `GITHUB_APP_ID` | No | GitHub App ID (replaces GITHUB_TOKEN) |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | No | Path to GitHub App private key PEM file |
+| `MAX_CONCURRENT_TASKS` | No | Max parallel tasks (default: `3`) |
+| `REPOS_BASE_DIR` | No | Managed repos directory (default: `~/.devops-bot/repos`) |
+| `WORKSPACE_DIR` | No | Workspace directory (default: `~/.devops-bot`) |
+| `ISSUE_SCAN_LABELS` | No | Labels for external issue scanning (default: `devops-bot`) |
+| `ISSUE_AI_MODEL` | No | Model for Issue AI synthesis (default: `DISPATCHER_MODEL`) |
+| `APPROVAL_POLL_INTERVAL_MS` | No | Approval poll interval in ms (default: `1800000`) |
 | `OPENAI_API_KEY` | No | Embedding fallback when local embedding is unavailable |

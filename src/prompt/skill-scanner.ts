@@ -2,10 +2,10 @@
  * Skill Scanner — discovers skills from multiple directories.
  *
  * Scans two sources with priority-based merging:
- *   1. Bundled skills  (devops-bot install dir / skills/)  — lower priority
- *   2. Project skills  (TARGET_PROJECT_PATH / skills/)     — higher priority
+ *   1. Bundled skills   (devops-bot install dir / skills/)    — lower priority
+ *   2. Workspace skills (~/.devops-bot/skills/)               — higher priority
  *
- * When the same skill name exists in both, the project version wins.
+ * When the same skill name exists in both, the workspace version wins.
  * Only metadata (name + description) is extracted; full SKILL.md is loaded
  * on demand by the executor via read_file.
  */
@@ -24,18 +24,18 @@ export interface SkillEntry {
   /** Absolute path to SKILL.md (executor reads this on demand) */
   location: string
   /** Where this skill was loaded from */
-  source: 'bundled' | 'project'
+  source: 'bundled' | 'workspace'
 }
 
 export class SkillScanner {
   private cache: SkillEntry[] | null = null
 
   /**
-   * Scan skills from bundled + project directories and merge by priority.
-   * @param bundledRoot  Root of the devops-bot installation (contains skills/)
-   * @param projectPath  Root of the target project (optional, may also contain skills/)
+   * Scan skills from bundled + workspace directories and merge by priority.
+   * @param bundledRoot   Root of the devops-bot installation (contains skills/)
+   * @param workspaceDir  Workspace directory (~/.devops-bot/) containing skills/
    */
-  getSkills(bundledRoot: string, projectPath?: string): SkillEntry[] {
+  getSkills(bundledRoot: string, workspaceDir?: string): SkillEntry[] {
     if (this.cache !== null) return this.cache
 
     const merged = new Map<string, SkillEntry>()
@@ -44,8 +44,8 @@ export class SkillScanner {
       merged.set(entry.name, entry)
     }
 
-    if (projectPath) {
-      for (const entry of scanDir(join(projectPath, 'skills'), 'project')) {
+    if (workspaceDir) {
+      for (const entry of scanDir(join(workspaceDir, 'skills'), 'workspace')) {
         merged.set(entry.name, entry)
       }
     }
@@ -55,8 +55,8 @@ export class SkillScanner {
 
     if (entries.length > 0) {
       const bundled = entries.filter((s) => s.source === 'bundled').length
-      const project = entries.filter((s) => s.source === 'project').length
-      log.info(`Loaded ${entries.length} skill(s): ${bundled} bundled, ${project} project`)
+      const workspace = entries.filter((s) => s.source === 'workspace').length
+      log.info(`Loaded ${entries.length} skill(s): ${bundled} bundled, ${workspace} workspace`)
     }
     return entries
   }

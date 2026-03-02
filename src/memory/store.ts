@@ -100,6 +100,11 @@ export class MemoryStore {
   /** JSONL export debounce timer */
   private exportTimer: NodeJS.Timeout | null = null
 
+  /** Expose the raw SQLite database handle for shared use (e.g. project registry). */
+  getDatabase(): any {
+    return this.db?.getRawDatabase()
+  }
+
   async init(): Promise<void> {
     await Promise.all([
       mkdir(MEMORY_ROOT, { recursive: true }),

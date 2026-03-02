@@ -21,6 +21,13 @@ data/memory/
     └── 2026-02.jsonl       # All chat messages from Feb 2026
 ```
 
+### Project Registry Tables
+
+In multi-project mode, two additional tables are added to `index.sqlite`:
+
+- `projects` — registered git repositories (id, git_url, local_path, default_branch)
+- `chat_project_map` — which chat groups are bound to which projects (chat_id, project_id, last_used)
+
 ## Why This Hybrid Design
 
 | Concern | Current behavior |
@@ -54,8 +61,8 @@ Each memory record is represented as `MemoryItem` in code (`src/memory/types.ts`
 Each line in `conversations/{YYYY-MM}.jsonl` is a `ChatMessage`:
 
 ```json
-{"role":"user","content":"帮我修复登录页面的时区问题","senderName":"Alice","timestamp":"2026-02-04T10:00:00.000Z"}
-{"role":"assistant","content":"✅ 任务已创建: 修复时区显示\n📋 任务ID: task-abc","timestamp":"2026-02-04T10:00:05.000Z"}
+{"role":"user","content":"Fix the timezone issue on the login page","senderName":"Alice","timestamp":"2026-02-04T10:00:00.000Z"}
+{"role":"assistant","content":"✅ Task created: Fix timezone display\n📋 Task ID: task-abc","timestamp":"2026-02-04T10:00:05.000Z"}
 ```
 
 Metadata (`chatId`, `extractedUpTo`) is in `conversations/_state.json`, keeping the message logs append-only.
@@ -102,7 +109,7 @@ data/memory/
 │   └ Chose dayjs over moment.js for bundle size by Alice [2026/2/4]
 │   └ API uses REST not GraphQL [2026/2/1]
 ├── task_result.jsonl (5 items)
-│   └ 完成登录模块重构，修改了auth/login.ts... [2026/2/3]
+│   └ Completed login module refactor, modified auth/login.ts... [2026/2/3]
 │   ... 2 more
 ├── (empty: context.jsonl, preference.jsonl, issue.jsonl, task_input.jsonl)
 └── conversations/ (3 months)

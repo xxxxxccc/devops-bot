@@ -28,10 +28,24 @@ const DISPATCHER_MODEL = process.env.DISPATCHER_MODEL || 'claude-sonnet-4-5-2025
 /* ------------------------------------------------------------------ */
 
 export interface DispatcherResponse {
-  intent: 'chat' | 'query_memory' | 'create_task'
+  intent:
+    | 'chat'
+    | 'query_memory'
+    | 'execute_task'
+    | 'propose_task'
+    | 'create_issue'
+    | 'add_project'
+    | 'remove_project'
   reply?: string
+  projectId?: string
   taskTitle?: string
   taskDescription?: string
+  /** Why this risk tier was chosen (shown in Issue + chat reply) */
+  riskReason?: string
+  /** Labels for issues (e.g. ["enhancement", "bug"]) */
+  issueLabels?: string[]
+  /** Git URL for add_project intent */
+  gitUrl?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -304,7 +318,7 @@ export class DispatcherAIClient {
     })
     log.warn('Retry also failed, falling back to raw text')
     const fallback = originalText.length > 500 ? `${originalText.slice(0, 500)}...` : originalText
-    return { intent: 'chat', reply: fallback || '抱歉，我故障了' }
+    return { intent: 'chat', reply: fallback || 'Sorry, something went wrong.' }
   }
 
   /* ---------------------------------------------------------------- */
@@ -475,22 +489,33 @@ export function extractJSON(text: string): DispatcherResponse | null {
   }
 
   if (text.includes('"intent"')) {
-    const intentMatch = text.match(/"intent"\s*:\s*"(chat|query_memory|create_task)"/)
+    const intentMatch = text.match(
+      /"intent"\s*:\s*"(chat|query_memory|execute_task|propose_task|create_issue|add_project|remove_project)"/,
+    )
     if (intentMatch) {
       const intent = intentMatch[1] as DispatcherResponse['intent']
       const replyMatch = text.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)/)
       const titleMatch = text.match(/"taskTitle"\s*:\s*"((?:[^"\\]|\\.)*)/)
       const descMatch = text.match(/"taskDescription"\s*:\s*"((?:[^"\\]|\\.)*)/)
+      const projectIdMatch = text.match(/"projectId"\s*:\s*"((?:[^"\\]|\\.)*)/)
 
-      if (intent === 'create_task' && titleMatch) {
+      if (
+        (intent === 'execute_task' || intent === 'propose_task' || intent === 'create_issue') &&
+        titleMatch
+      ) {
         return {
           intent,
+          projectId: projectIdMatch ? unescapeJSON(projectIdMatch[1]) : undefined,
           taskTitle: unescapeJSON(titleMatch[1]),
           taskDescription: descMatch ? unescapeJSON(descMatch[1]) : undefined,
         }
       }
       if (replyMatch) {
-        return { intent, reply: unescapeJSON(replyMatch[1]) }
+        return {
+          intent,
+          reply: unescapeJSON(replyMatch[1]),
+          projectId: projectIdMatch ? unescapeJSON(projectIdMatch[1]) : undefined,
+        }
       }
     }
   }

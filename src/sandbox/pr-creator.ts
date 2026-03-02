@@ -34,6 +34,10 @@ export interface PROptions {
   baseBranch: string
   title: string
   description?: string
+  /** Who requested this change (user name from IM) */
+  createdBy?: string
+  /** Linked issue number (for "Closes #N" in PR body) */
+  issueNumber?: number
   draft?: boolean
 }
 
@@ -236,14 +240,29 @@ function pushWithMROptions(opts: PROptions): string | undefined {
 /* ------------------------------------------------------------------ */
 
 async function githubPushThenPR(opts: PROptions, info: RepoInfo): Promise<string | undefined> {
-  await plainPush(opts)
+  await githubPush(opts, info)
 
-  // Strategy 1: REST API
-  const token = getGitHubToken()
-  if (token) {
-    const url = await createGitHubPRViaAPI(opts, info, token)
-    if (url) return url
-    log.warn('GitHub API PR creation failed, trying gh CLI')
+  // Strategy 1: GitHub Client (App token or PAT)
+  const { getGitHubClient } = await import('../github/client.js')
+  const client = await getGitHubClient()
+  if (client.isAvailable) {
+    const result = await client.createPR(
+      info.owner,
+      info.repo,
+      {
+        title: opts.title,
+        body: buildBody(opts),
+        head: opts.branchName,
+        base: opts.baseBranch,
+        draft: opts.draft,
+      },
+      info.host,
+    )
+    if (result) {
+      log.info('PR created via GitHub Client', { url: result.url })
+      return result.url
+    }
+    log.warn('GitHub Client PR creation failed, trying gh CLI')
   }
 
   // Strategy 2: gh CLI
@@ -270,7 +289,8 @@ async function githubPushThenPR(opts: PROptions, info: RepoInfo): Promise<string
 
   log.error(
     'Branch pushed but PR creation failed. ' +
-      'Set GITHUB_TOKEN in .env.local or install/authenticate gh CLI (https://cli.github.com)',
+      'Configure GITHUB_APP_ID or GITHUB_TOKEN in .env.local, ' +
+      'or install/authenticate gh CLI (https://cli.github.com)',
   )
   return undefined
 }
@@ -278,32 +298,6 @@ async function githubPushThenPR(opts: PROptions, info: RepoInfo): Promise<string
 /* ------------------------------------------------------------------ */
 /*  REST API implementations                                           */
 /* ------------------------------------------------------------------ */
-
-async function createGitHubPRViaAPI(
-  opts: PROptions,
-  info: RepoInfo,
-  token: string,
-): Promise<string | undefined> {
-  const apiBase =
-    info.host === 'github.com' ? 'https://api.github.com' : `https://${info.host}/api/v3`
-
-  return apiPost(`${apiBase}/repos/${info.owner}/${info.repo}/pulls`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: {
-      title: opts.title,
-      body: buildBody(opts),
-      head: opts.branchName,
-      base: opts.baseBranch,
-      draft: opts.draft ?? false,
-    },
-    urlField: 'html_url',
-    label: 'GitHub API',
-  })
-}
 
 async function createGitLabMRViaAPI(
   opts: PROptions,
@@ -336,8 +330,29 @@ async function plainPush(opts: Pick<PROptions, 'worktreePath' | 'branchName'>): 
   await git.push(['--set-upstream', 'origin', opts.branchName])
 }
 
-function getGitHubToken(): string | undefined {
-  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || undefined
+/**
+ * Push a GitHub branch using an authenticated HTTPS remote URL when available.
+ * Falls back to default push (SSH / credential helper) if no token.
+ */
+async function githubPush(opts: PROptions, info: RepoInfo): Promise<void> {
+  const { getGitHubClient } = await import('../github/client.js')
+  const client = await getGitHubClient()
+  const authUrl = await client.getAuthenticatedRemoteUrl(info.owner, info.repo, info.host)
+
+  if (authUrl) {
+    const git = simpleGit(opts.worktreePath)
+    const tempRemote = 'origin-auth'
+    try {
+      await git.addRemote(tempRemote, authUrl)
+      await git.push([tempRemote, opts.branchName, '--set-upstream'])
+    } finally {
+      await git.removeRemote(tempRemote).catch(() => {
+        // Best-effort cleanup of temp remote
+      })
+    }
+  } else {
+    await plainPush(opts)
+  }
 }
 
 function getGitLabToken(): string | undefined {
@@ -418,12 +433,33 @@ async function apiPost(url: string, opts: ApiPostOpts): Promise<string | undefin
 }
 
 function buildBody(opts: PROptions): string {
-  return [
-    '## Summary',
-    '',
-    opts.description || opts.title,
-    '',
-    '---',
-    '_This PR was automatically created by DevOps Bot._',
-  ].join('\n')
+  const lines: string[] = []
+
+  if (opts.issueNumber) {
+    lines.push(`Closes #${opts.issueNumber}`, '')
+  }
+
+  if (opts.createdBy) {
+    lines.push(`**Requested by:** ${opts.createdBy}`, '')
+  }
+
+  lines.push('## Summary', '', opts.description || opts.title, '')
+
+  // Extract commit messages from the sandbox branch for a change log
+  try {
+    const commitLog = execFileSync(
+      'git',
+      ['log', `${opts.baseBranch}..HEAD`, '--pretty=format:- %s'],
+      { cwd: opts.worktreePath, encoding: 'utf-8', timeout: 5000 },
+    ).trim()
+
+    if (commitLog) {
+      lines.push('## Changes', '', commitLog, '')
+    }
+  } catch {
+    // Non-critical — skip commit log
+  }
+
+  lines.push('---', '_This PR was automatically created by DevOps Bot._')
+  return lines.join('\n')
 }

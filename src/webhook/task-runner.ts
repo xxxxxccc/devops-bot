@@ -1,7 +1,12 @@
 /**
  * Task Runner — queue management, AI execution, lifecycle callbacks.
  *
- * Owns the task queue (serial execution, one at a time) and orchestrates:
+ * Concurrency model:
+ *   - Per-project serial: tasks targeting the same project run one at a time
+ *   - Cross-project parallel: tasks for different projects run concurrently
+ *   - Global limit: MAX_CONCURRENT_TASKS (default 3)
+ *
+ * Orchestrates:
  * - AI execution via AIExecutor
  * - MCP config generation
  * - SSE event broadcasting
@@ -10,6 +15,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,17 +36,23 @@ const log = createLogger('task-runner')
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const MCP_SERVER_PATH = join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')
 
+const DEFAULT_WORKSPACE_DIR = join(homedir(), '.devops-bot')
+
+interface QueueItem {
+  taskId: string
+  prompt: string
+  metadata?: Record<string, unknown>
+  projectPath: string
+}
+
 export class TaskRunner {
   readonly store: TaskStore
   private sse: SSEManager
 
-  // Queue state
-  private taskQueue: Array<{
-    taskId: string
-    prompt: string
-    metadata?: Record<string, unknown>
-  }> = []
-  private isProcessingQueue = false
+  // Queue state — per-project serial, cross-project parallel
+  private taskQueue: QueueItem[] = []
+  private runningTasks = new Map<string, string>() // taskId -> projectPath
+  private readonly maxConcurrency: number
 
   // Running process handles (for stop support)
   private runningProcesses: Map<string, ChildProcess> = new Map()
@@ -63,6 +75,7 @@ export class TaskRunner {
     this.config = config
     this.store = new TaskStore()
     this.sse = sse
+    this.maxConcurrency = config.maxConcurrentTasks || 3
   }
 
   async init(): Promise<void> {
@@ -74,7 +87,11 @@ export class TaskRunner {
   }
 
   get isProcessing(): boolean {
-    return this.isProcessingQueue
+    return this.runningTasks.size > 0
+  }
+
+  get runningCount(): number {
+    return this.runningTasks.size
   }
 
   setIMPlatform(platform: import('../channels/types.js').IMPlatform): void {
@@ -90,7 +107,10 @@ export class TaskRunner {
     prompt: string,
     metadata?: Record<string, unknown>,
     createdBy?: string,
+    projectPath?: string,
   ): Promise<void> {
+    const effectivePath = projectPath || this.config.projectPath || ''
+
     const task: Task = {
       id: taskId,
       status: 'pending',
@@ -108,8 +128,11 @@ export class TaskRunner {
       timestamp: new Date().toISOString(),
     })
 
-    this.taskQueue.push({ taskId, prompt, metadata })
-    log.info(`Task ${taskId} queued`, { position: this.taskQueue.length })
+    this.taskQueue.push({ taskId, prompt, metadata, projectPath: effectivePath })
+    log.info(`Task ${taskId} queued`, {
+      position: this.taskQueue.length,
+      project: effectivePath,
+    })
 
     this.processQueue()
   }
@@ -119,7 +142,6 @@ export class TaskRunner {
   /* ---------------------------------------------------------------- */
 
   stopTask(taskId: string): boolean {
-    // Try child process (legacy CLI mode)
     const childProcess = this.runningProcesses.get(taskId)
     if (childProcess) {
       childProcess.kill('SIGTERM')
@@ -132,7 +154,6 @@ export class TaskRunner {
       this.runningProcesses.delete(taskId)
     }
 
-    // Try AbortController (Claude API mode)
     const abortController = this.runningAbortControllers.get(taskId)
     if (abortController) {
       abortController.abort()
@@ -152,20 +173,41 @@ export class TaskRunner {
       })
     }
 
+    this.runningTasks.delete(taskId)
+    this.processQueue()
+
     return !!(childProcess || abortController)
   }
 
   /* ---------------------------------------------------------------- */
-  /*  Queue processing                                                 */
+  /*  Queue processing — per-project serial, cross-project parallel    */
   /* ---------------------------------------------------------------- */
 
-  private async processQueue(): Promise<void> {
-    if (this.isProcessingQueue || this.taskQueue.length === 0) return
+  private isProjectBusy(projectPath: string): boolean {
+    for (const path of this.runningTasks.values()) {
+      if (path === projectPath) return true
+    }
+    return false
+  }
 
-    this.isProcessingQueue = true
-    const { taskId, prompt, metadata } = this.taskQueue.shift()!
+  private processQueue(): void {
+    while (this.runningTasks.size < this.maxConcurrency && this.taskQueue.length > 0) {
+      const idx = this.taskQueue.findIndex((item) => !this.isProjectBusy(item.projectPath))
+      if (idx === -1) break
 
-    // Mark running
+      const item = this.taskQueue.splice(idx, 1)[0]
+      this.runningTasks.set(item.taskId, item.projectPath)
+
+      this.executeOneTask(item).finally(() => {
+        this.runningTasks.delete(item.taskId)
+        this.processQueue()
+      })
+    }
+  }
+
+  private async executeOneTask(item: QueueItem): Promise<void> {
+    const { taskId, prompt, metadata, projectPath } = item
+
     const runningTask = this.store.update(taskId, { status: 'running' })
     if (runningTask) {
       this.sse.broadcastTaskEvent({
@@ -175,23 +217,30 @@ export class TaskRunner {
       })
     }
 
-    log.info(`Task ${taskId} starting`, { queueRemaining: this.taskQueue.length })
+    log.info(`Task ${taskId} starting`, {
+      queueRemaining: this.taskQueue.length,
+      running: this.runningTasks.size,
+      project: projectPath,
+    })
 
     let sandbox: Sandbox | undefined
     let mcpConfigPath: string | undefined
 
     try {
-      // Create sandbox (isolated worktree + branch)
       const taskTitle = (metadata?.title as string) || taskId
-      sandbox = await this.sandboxManager.createSandbox(taskId, taskTitle, this.config.projectPath)
+      sandbox = await this.sandboxManager.createSandbox(taskId, taskTitle, projectPath)
 
-      // MCP config points to the sandbox worktree, not the original project
       mcpConfigPath = await this.createMCPConfig(sandbox.worktreePath)
       const task = this.store.get(taskId)
-      const output = await this.executeAI(prompt, mcpConfigPath, task!, sandbox)
+      const output = await this.executeAI(prompt, mcpConfigPath, task!, sandbox, projectPath)
 
-      // Finalize: push branch + create PR
-      const { prUrl } = await this.sandboxManager.finalizeSandbox(sandbox, taskTitle, task?.prompt)
+      const { prUrl } = await this.sandboxManager.finalizeSandbox(
+        sandbox,
+        taskTitle,
+        task?.prompt,
+        task?.createdBy,
+        task?.metadata?.issueNumber as number | undefined,
+      )
 
       const updatedTask = this.store.update(taskId, {
         status: 'completed',
@@ -205,7 +254,7 @@ export class TaskRunner {
           task: updatedTask,
           timestamp: new Date().toISOString(),
         })
-        await this.memorizeTaskLifecycle(updatedTask)
+        await this.memorizeTaskLifecycle(updatedTask, projectPath)
         await this.notifyCompletion(updatedTask)
       }
 
@@ -222,7 +271,7 @@ export class TaskRunner {
           task: failedTask,
           timestamp: new Date().toISOString(),
         })
-        await this.memorizeTaskFailure(failedTask)
+        await this.memorizeTaskFailure(failedTask, projectPath)
         await this.notifyFailure(failedTask)
       }
 
@@ -230,7 +279,6 @@ export class TaskRunner {
         error: error instanceof Error ? error.message : String(error),
       })
     } finally {
-      // Always clean up sandbox and MCP config
       if (sandbox) {
         await this.sandboxManager.cleanupSandbox(sandbox).catch((e) =>
           log.warn('Sandbox cleanup failed', {
@@ -244,9 +292,6 @@ export class TaskRunner {
           log.warn('Failed to delete MCP config file', { taskId, mcpConfigPath })
         })
       }
-
-      this.isProcessingQueue = false
-      this.processQueue()
     }
   }
 
@@ -258,7 +303,8 @@ export class TaskRunner {
     prompt: string,
     mcpConfigPath: string,
     task: Task,
-    sandbox?: Sandbox,
+    sandbox: Sandbox | undefined,
+    projectPath: string,
   ): Promise<string> {
     const { AIExecutor } = await import('../agent/ai-executor.js')
     const { createProviderFromEnv } = await import('../providers/index.js')
@@ -266,8 +312,9 @@ export class TaskRunner {
     const provider = await createProviderFromEnv()
 
     const devopsRoot = join(__dirname, '..', '..')
-    const projectRules = this.projectScanner.getProjectRules(this.config.projectPath)
-    const skills = this.skillScanner.getSkills(devopsRoot, this.config.projectPath)
+    const workspaceDir = process.env.WORKSPACE_DIR || DEFAULT_WORKSPACE_DIR
+    const projectRules = projectPath ? this.projectScanner.getProjectRules(projectPath) : ''
+    const skills = this.skillScanner.getSkills(devopsRoot, workspaceDir)
     const jiraEnabled = !!(process.env.JIRA_URL && process.env.JIRA_API_TOKEN)
     const figmaEnabled = !!process.env.FIGMA_API_KEY
     const systemPrompt = buildExecutorSystemPrompt({
@@ -328,7 +375,7 @@ export class TaskRunner {
   private async createMCPConfig(targetProjectPath?: string): Promise<string> {
     const devopsRoot = join(__dirname, '..', '..')
     const devopsApiUrl = `http://localhost:${this.config.port}`
-    const effectivePath = targetProjectPath || this.config.projectPath
+    const effectivePath = targetProjectPath || this.config.projectPath || ''
 
     const mcpServers: Record<string, unknown> = {
       devopsBot: {
@@ -384,8 +431,11 @@ export class TaskRunner {
     const title = (task.metadata!.title as string) || task.id
     const summaryText = this.formatTaskSummary(task)
     const prLine = task.prUrl ? `\n\n🔗 **PR:** ${task.prUrl}` : ''
-    const cardBody = `📋 任务ID: \`${task.id}\`\n\n${summaryText}${prLine}`
-    const card = { markdown: cardBody, header: { title: `✅ 任务完成: ${title}`, color: 'green' } }
+    const cardBody = `📋 Task ID: \`${task.id}\`\n\n${summaryText}${prLine}`
+    const card = {
+      markdown: cardBody,
+      header: { title: `✅ Task Completed: ${title}`, color: 'green' },
+    }
     const cardMsgId = task.metadata!.imCardMessageId as string | undefined
     const replyTo = task.metadata!.imMessageId as string | undefined
 
@@ -405,8 +455,8 @@ export class TaskRunner {
     if (!chatId || !this.imPlatform) return
 
     const title = (task.metadata!.title as string) || task.id
-    const cardBody = `📋 任务ID: \`${task.id}\`\n\n**错误:** ${task.error || '未知错误'}`
-    const card = { markdown: cardBody, header: { title: `❌ 任务失败: ${title}`, color: 'red' } }
+    const cardBody = `📋 Task ID: \`${task.id}\`\n\n**Error:** ${task.error || 'Unknown error'}`
+    const card = { markdown: cardBody, header: { title: `❌ Task Failed: ${title}`, color: 'red' } }
     const cardMsgId = task.metadata!.imCardMessageId as string | undefined
     const replyTo = task.metadata!.imMessageId as string | undefined
 
@@ -424,13 +474,15 @@ export class TaskRunner {
   private formatTaskSummary(task: Task): string {
     const parts: string[] = []
     if (task.summary?.thinking) {
-      parts.push(`**思路:**\n${task.summary.thinking}`)
+      parts.push(`**Approach:**\n${task.summary.thinking}`)
     }
     if (task.summary?.modifiedFiles?.length) {
-      parts.push(`**修改文件:**\n${task.summary.modifiedFiles.map((f) => `- ${f}`).join('\n')}`)
+      parts.push(
+        `**Modified files:**\n${task.summary.modifiedFiles.map((f) => `- ${f}`).join('\n')}`,
+      )
     }
     if (parts.length === 0) {
-      parts.push('任务已完成')
+      parts.push('Task completed')
     }
     return parts.join('\n\n')
   }
@@ -439,15 +491,15 @@ export class TaskRunner {
   /*  Memory feedback                                                  */
   /* ---------------------------------------------------------------- */
 
-  private async memorizeTaskLifecycle(task: Task): Promise<void> {
+  private async memorizeTaskLifecycle(task: Task, projectPath: string): Promise<void> {
     try {
       const store = await getMemoryStore()
       if (!this.memoryExtractor) {
         this.memoryExtractor = new MemoryExtractor(store)
       }
-      this.memoryExtractor.memorizeTaskInput(task, this.config.projectPath)
+      this.memoryExtractor.memorizeTaskInput(task, projectPath)
       if (task.status === 'completed' && task.summary) {
-        await this.memoryExtractor.memorizeTaskResult(task, this.config.projectPath)
+        await this.memoryExtractor.memorizeTaskResult(task, projectPath)
       }
     } catch (err) {
       log.error('Failed to memorize task lifecycle', {
@@ -457,13 +509,13 @@ export class TaskRunner {
     }
   }
 
-  private async memorizeTaskFailure(task: Task): Promise<void> {
+  private async memorizeTaskFailure(task: Task, projectPath: string): Promise<void> {
     try {
       const store = await getMemoryStore()
       if (!this.memoryExtractor) {
         this.memoryExtractor = new MemoryExtractor(store)
       }
-      this.memoryExtractor.memorizeTaskFailure(task, this.config.projectPath)
+      this.memoryExtractor.memorizeTaskFailure(task, projectPath)
     } catch (err) {
       log.error('Failed to memorize task failure', {
         taskId: task.id,

@@ -1,6 +1,5 @@
 /**
- * Shell 命令执行工具集
- * 使用 Zod schema 定义参数，包含安全限制
+ * Shell command execution tools with safety restrictions.
  */
 
 import { exec, spawn } from 'node:child_process'
@@ -10,17 +9,17 @@ import { type Tool, defineTool } from '../core/types.js'
 
 const execAsync = promisify(exec)
 
-// 危险命令黑名单 (正则表达式)
+// Dangerous command patterns (blocked)
 const DANGEROUS_PATTERNS = [
-  /^rm\s+-rf\s+\/($|\s)/i, // rm -rf / 或 rm -rf / xxx
-  /^dd\s+if=.*of=\/dev\//i, // dd 写入设备
-  /:\(\)\{\s*:\|:&\s*\};/, // Fork bomb
-  />\s*\/dev\/null.*>&\s*0/, // 重定向到设备
-  /mkfs\.\w+\s+\/dev\//i, // 格式化设备
-  /^(curl|wget)\s+.*\|\s*sh/i, // 管道到 shell
+  /^rm\s+-rf\s+\/($|\s)/i,
+  /^dd\s+if=.*of=\/dev\//i,
+  /:\(\)\{\s*:\|:&\s*\};/,
+  />\s*\/dev\/null.*>&\s*0/,
+  /mkfs\.\w+\s+\/dev\//i,
+  /^(curl|wget)\s+.*\|\s*sh/i,
 ]
 
-// 危险命令关键词
+// Dangerous command keywords
 const DANGEROUS_KEYWORDS = [
   'rm -rf ~',
   'rm -rf $HOME',
@@ -33,14 +32,12 @@ const DANGEROUS_KEYWORDS = [
 function isDangerousCommand(command: string): { safe: boolean; reason?: string } {
   const trimmed = command.trim()
 
-  // 检查正则模式
   for (const pattern of DANGEROUS_PATTERNS) {
     if (pattern.test(trimmed)) {
       return { safe: false, reason: `Matches dangerous pattern: ${pattern.source}` }
     }
   }
 
-  // 检查关键词
   for (const keyword of DANGEROUS_KEYWORDS) {
     if (trimmed.includes(keyword)) {
       return { safe: false, reason: `Contains dangerous keyword: ${keyword}` }
@@ -125,7 +122,7 @@ export const shellStreamTool = defineTool({
     return new Promise((resolve, reject) => {
       const child = spawn(args.command, cmdArgs, {
         cwd: context.projectPath,
-        shell: cmdArgs.length === 0, // 如果没有 args，使用 shell 模式
+        shell: cmdArgs.length === 0,
       })
 
       let output = ''
@@ -187,5 +184,5 @@ export const npmTool = defineTool({
   },
 })
 
-// 导出所有 shell 工具
+// Export all shell tools
 export const shellTools: Tool[] = [shellExecTool, shellStreamTool, npmTool]

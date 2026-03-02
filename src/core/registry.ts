@@ -1,6 +1,5 @@
 /**
- * 工具注册中心
- * 集中管理所有工具，支持动态注册、策略过滤和执行
+ * Tool registry — centralized tool management, policy filtering, and execution.
  */
 
 import * as z from 'zod'

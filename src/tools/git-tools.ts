@@ -1,6 +1,5 @@
 /**
- * Git 操作工具集
- * 使用 Zod schema 定义参数
+ * Git operation tools.
  */
 
 import { simpleGit } from 'simple-git'

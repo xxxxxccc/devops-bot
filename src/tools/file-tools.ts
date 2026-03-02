@@ -1,6 +1,5 @@
 /**
- * 文件操作工具集
- * 使用 Zod schema 定义参数
+ * File operation tools.
  */
 
 import { execSync } from 'node:child_process'
@@ -66,7 +65,7 @@ export const readFileTool = defineTool({
 
     const content = await fs.readFile(filePath, 'utf-8')
 
-    // 支持分页读取
+    // Paginated reading
     if (args.offset || args.limit) {
       const lines = content.split('\n')
       const offset = (args.offset || 1) - 1
@@ -243,7 +242,7 @@ export const grepSearchTool = defineTool({
   },
 })
 
-// 导出所有文件工具
+// Export all file tools
 export const fileTools: Tool[] = [
   readFileTool,
   writeFileTool,

@@ -1,5 +1,9 @@
 # DevOps Bot
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![PR Check](https://github.com/xxxxxccc/devops-bot/actions/workflows/pr-check.yml/badge.svg)](https://github.com/xxxxxccc/devops-bot/actions/workflows/pr-check.yml)
+[![Release](https://github.com/xxxxxccc/devops-bot/actions/workflows/release.yml/badge.svg)](https://github.com/xxxxxccc/devops-bot/actions/workflows/release.yml)
+
 Chat-driven AI coding agent — discuss requirements in group chat, get automated code changes and pull requests.
 
 Supports multiple AI providers (Anthropic, OpenAI, and any OpenAI-compatible API) and multiple IM platforms (Feishu/Lark, Slack).
@@ -33,7 +37,10 @@ flowchart LR
     Parser --> Router
     Router -->|"chat"| ChatReply
     Router -->|"query_memory"| MemoryQuery
-    Router -->|"create_task\n+ attachments + links"| TaskExec
+    Router -->|"execute_task"| TaskExec
+    Router -->|"propose_task"| TaskExec
+    Router -->|"create_issue"| TaskExec
+    Router -->|"add_project / remove_project"| TaskExec
     Router <-->|"read/write"| Memory
     MemoryQuery <-->|"retrieve"| Memory
     TaskExec -->|"enriched description"| Executor["AIExecutor"]
@@ -79,6 +86,61 @@ flowchart TB
     Error -->|"AI extract"| Issue_Mem
 ```
 
+## Three-Tier Task Execution
+
+The dispatcher AI assesses risk level and routes tasks through three tiers:
+
+```mermaid
+flowchart TD
+  msg["User Message"] --> ai["Dispatcher AI\n(risk assessment)"]
+  ai -->|"Low risk"| tier1["Tier 1: execute_task\nImmediate execution"]
+  ai -->|"Medium risk"| tier2["Tier 2: propose_task\nIssue + approval"]
+  ai -->|"High risk / unclear"| tier3["Tier 3: create_issue\nDiscussion only"]
+
+  tier1 --> exec1["Execute + Create Issue\n+ PR links to Issue"]
+  tier2 --> issue2["Create Issue\n(wait for ✅ reaction)"]
+  issue2 -->|"Approved"| exec2["Execute Task"]
+  tier3 --> issue3["Create Issue\n(human discussion)"]
+```
+
+### Tier 1: `execute_task` (Low Risk)
+
+Executes immediately without human approval. Best for:
+- Copy/text updates, config tweaks
+- Simple bug fixes with clear scope
+- Style adjustments, typo fixes
+
+An Issue is auto-created for tracking, and the resulting PR links to it.
+
+### Tier 2: `propose_task` (Medium Risk)
+
+Creates an Issue and waits for approval before executing. A background poller checks for approval reactions (`+1`, `heart`, or `hooray`) every 30 minutes (configurable via `APPROVAL_POLL_INTERVAL_MS`). When approved, an independent **Issue AI** (using the Dispatcher model) reads the full issue discussion and synthesizes a clear, actionable task description -- filtering out meta-discussion and focusing on the latest consensus. The synthesized task is then executed by the Task AI. Used for:
+- New features
+- Refactoring across multiple files
+- Adding dependencies
+- Multi-module changes
+
+### External Issue Support
+
+The poller also scans all registered projects for open issues labeled `devops-bot` (configurable via `ISSUE_SCAN_LABELS`). Any issue with an approval reaction is processed by the Issue AI the same way. This means users can create issues directly on GitHub/GitLab, label them, and approve them -- no chat interaction required. The bot posts a comment on the issue when execution starts or when it determines the issue is not feasible for automated execution.
+
+### Tier 3: `create_issue` (High Risk / Unclear)
+
+Creates an Issue for discussion only — no automatic execution. Used for:
+- Architecture changes
+- Vague or open-ended requests
+- Data migrations
+- Breaking API changes
+
+### Risk Assessment Criteria
+
+The AI evaluates:
+- **Specificity**: Is it clear exactly what to change?
+- **Scope**: How many files/modules are affected?
+- **Reversibility**: Can it be easily reverted?
+- **Breaking potential**: Could it break existing functionality?
+- **Design decisions**: Are there multiple valid approaches?
+
 ## Features
 
 - **Multi-provider AI**: Anthropic (Claude), OpenAI, or any OpenAI-compatible API (DeepSeek, Groq, Together, etc.)
@@ -86,7 +148,10 @@ flowchart TB
 - **Two-Layer AI**: Fast model routes intents, powerful model executes tasks — cost optimized
 - **Project Memory**: AI remembers decisions, context, and past work
 - **Sandbox Execution**: Tasks run in isolated Git worktree sandboxes, changes submitted as Draft PRs
-- **Task Queue**: FIFO queue ensures one task runs at a time
+- **Parallel Execution**: Per-project serial, cross-project parallel task execution (configurable concurrency)
+- **Multi-Project**: Manage multiple git repositories from a single chat group
+- **GitHub App Auth**: Secure authentication via GitHub App (replaces PAT)
+- **Three-Tier Tasks**: AI-driven risk assessment routes tasks through execute/propose/issue tiers
 - **Jira Integration**: Auto-fetch issue details when Jira link detected
 - **Figma Integration**: Fetch design context from Figma links
 - **File Attachments**: Screenshots and files from IM messages are passed to Task AI
@@ -128,8 +193,15 @@ cp .env.example .env.local
 Edit `.env.local`:
 
 ```env
-# Target project path (the codebase AI will work on)
-TARGET_PROJECT_PATH=/path/to/your/project
+# Single-project mode (backward compatible):
+# TARGET_PROJECT_PATH=/path/to/your/project
+
+# Multi-project mode: projects added via chat ("add project <git URL>")
+# No TARGET_PROJECT_PATH needed
+
+# GitHub App (recommended for GitHub repos):
+# GITHUB_APP_ID=123456
+# GITHUB_APP_PRIVATE_KEY_PATH=/path/to/private-key.pem
 
 # AI provider: anthropic | openai (default: anthropic)
 # AI_PROVIDER=anthropic
@@ -308,7 +380,15 @@ devops-bot/
 │   │   └── prompt.ts         # Layer 2 prompt builder
 │   ├── sandbox/
 │   │   ├── manager.ts        # Git worktree sandbox lifecycle
-│   │   └── pr-creator.ts     # Auto PR/MR creation (GitHub/GitLab)
+│   │   ├── pr-creator.ts     # Auto PR/MR creation (GitHub/GitLab)
+│   │   └── issue-creator.ts  # Auto Issue creation (GitHub/GitLab)
+│   ├── github/
+│   │   ├── app-auth.ts       # GitHub App JWT + installation token
+│   │   └── client.ts         # Unified GitHub API client
+│   ├── project/
+│   │   ├── registry.ts       # SQLite-backed project registry
+│   │   ├── repo-manager.ts   # Git clone/sync manager
+│   │   └── resolver.ts       # Project resolution orchestrator
 │   ├── mcp/
 │   │   └── server.ts         # MCP server for AI tools
 │   ├── tools/
@@ -333,6 +413,10 @@ devops-bot/
 │   │   ├── *.jsonl           # Memory exports for AI browsing
 │   │   └── conversations/    # Conversation JSONL by month
 │   └── attachments/          # Uploaded/downloaded files
+├── ~/.devops-bot/              # Workspace directory
+│   ├── repos/                  # Managed git clones (multi-project mode)
+│   ├── skills/                 # Workspace-level user skills
+│   └── data/                   # Debug logs
 └── .env.local                # Configuration
 ```
 

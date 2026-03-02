@@ -129,6 +129,11 @@ export class MemoryDatabase {
     this.db = db
   }
 
+  /** Expose the raw SQLite database handle for shared use (e.g. project registry). */
+  getRawDatabase(): any {
+    return this.db
+  }
+
   /**
    * Create and initialize a MemoryDatabase.
    * Detects runtime (Bun vs Node.js) and uses the appropriate SQLite driver.

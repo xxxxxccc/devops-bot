@@ -99,12 +99,12 @@ export function setupRoutes(
   // Health
   app.get('/health', (_req, res) => {
     const stats = runner.store.getStats()
-    const projectName = config.projectPath.split('/').pop() || 'DevOps'
+    const projectName = config.projectPath?.split('/').pop() || 'multi-project'
     res.json({
       status: 'ok',
       version: '2.0.0',
       tasks: stats,
-      project: config.projectPath,
+      project: config.projectPath || '(multi-project mode)',
       projectName,
       sseClients: sse.clientCount,
       queue: { length: runner.queueLength, processing: runner.isProcessing },

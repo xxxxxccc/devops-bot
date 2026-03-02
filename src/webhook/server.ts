@@ -17,12 +17,19 @@ import { SSEManager } from './sse.js'
 import { TaskRunner } from './task-runner.js'
 import { setupMiddleware, setupRoutes } from './routes.js'
 import { buildTaskPrompt } from './prompt.js'
+import type { ProjectResolver } from '../project/resolver.js'
+import { ApprovalStore } from '../approval/store.js'
+import { ApprovalPoller } from '../approval/poller.js'
+import { getGitHubClient } from '../github/client.js'
 
 export class WebhookServer {
   private app = express()
   private runner: TaskRunner
   private sse = new SSEManager()
   private config: WebhookConfig
+  private _projectResolver: ProjectResolver | null = null
+  private _approvalStore: ApprovalStore | null = null
+  private _approvalPoller: ApprovalPoller | null = null
 
   constructor(config: WebhookConfig) {
     this.config = config
@@ -36,14 +43,37 @@ export class WebhookServer {
   /*  Public API                                                       */
   /* ---------------------------------------------------------------- */
 
-  /** Get the target project path */
-  getProjectPath(): string {
+  /** Get the target project path (undefined in multi-project mode) */
+  getProjectPath(): string | undefined {
     return this.config.projectPath
   }
 
-  /** Set the IM platform for task notifications */
+  /** Get the project resolver (initialized on first access) */
+  async getProjectResolver(): Promise<ProjectResolver> {
+    if (!this._projectResolver) {
+      const { getMemoryStore } = await import('../memory/store.js')
+      const store = await getMemoryStore()
+      const { ProjectResolver } = await import('../project/resolver.js')
+      this._projectResolver = new ProjectResolver(
+        (store as any).getDatabase(),
+        this.config.projectPath,
+      )
+      this._projectResolver.init()
+    }
+    return this._projectResolver
+  }
+
+  /** Set the IM platform for task notifications and wire up the poller */
   setIMPlatform(platform: import('../channels/types.js').IMPlatform): void {
     this.runner.setIMPlatform(platform)
+    if (this._approvalPoller) {
+      ;(this._approvalPoller as any).deps.imPlatform = platform
+    }
+  }
+
+  /** Get the approval store (initialized during start) */
+  getApprovalStore(): ApprovalStore | null {
+    return this._approvalStore
   }
 
   /** Merge additional metadata into an existing task */
@@ -64,6 +94,7 @@ export class WebhookServer {
     title: string
     description: string
     createdBy: string
+    projectPath?: string
     metadata?: Record<string, unknown>
     attachments?: Array<{
       filename: string
@@ -81,16 +112,59 @@ export class WebhookServer {
       attachments: data.attachments,
     })
 
+    const effectivePath = data.projectPath || this.config.projectPath || ''
     this.runner
-      .runTask(taskId, prompt, { ...data.metadata, title: data.title }, data.createdBy)
+      .runTask(
+        taskId,
+        prompt,
+        { ...data.metadata, title: data.title },
+        data.createdBy,
+        effectivePath,
+      )
       .catch(console.error)
 
     return taskId
   }
 
-  /** Start the Express server */
+  private async initApprovalPoller(): Promise<void> {
+    try {
+      const { getMemoryStore } = await import('../memory/store.js')
+      const store = await getMemoryStore()
+      const db = (store as any).getDatabase()
+
+      this._approvalStore = new ApprovalStore(db)
+      this._approvalStore.init()
+
+      const githubClient = await getGitHubClient()
+      const intervalMs = Number.parseInt(process.env.APPROVAL_POLL_INTERVAL_MS || '1800000', 10)
+
+      this._approvalPoller = new ApprovalPoller(
+        {
+          approvalStore: this._approvalStore,
+          githubClient,
+          imPlatform: (this.runner as any).imPlatform ?? null,
+          getProjectRegistry: async () => {
+            try {
+              const resolver = await this.getProjectResolver()
+              return resolver.getRegistry()
+            } catch {
+              return null
+            }
+          },
+          createTask: (data) => this.createTaskFromIM(data),
+        },
+        intervalMs,
+      )
+      this._approvalPoller.start()
+    } catch (err) {
+      console.error('Failed to initialize approval poller:', err)
+    }
+  }
+
+  /** Start the Express server and approval poller */
   async start(): Promise<void> {
     await this.runner.init()
+    await this.initApprovalPoller()
 
     this.app.listen(this.config.port, () => {
       console.log(`
@@ -98,7 +172,7 @@ export class WebhookServer {
       ║     DevOps Bot Webhook Server           ║
       ╠══════════════════════════════════════════════════╣
       ║  Port:     ${this.config.port.toString().padEnd(39)}║
-      ║  Project:  ${this.config.projectPath.slice(-37).padEnd(39)}║
+      ║  Project:  ${(this.config.projectPath || 'multi-project').slice(-37).padEnd(39)}║
       ╚══════════════════════════════════════════════════╝
 
       Endpoints:

@@ -1,8 +1,5 @@
 /**
- * 任务相关工具
- * 使用 Zod schema 定义参数
- * - submit_summary: AI 完成任务后调用此工具提交结论
- * - get_task_history: 获取历史任务信息
+ * Task-related tools: submit_summary and get_task_history.
  */
 
 import { readFileSync } from 'node:fs'
@@ -10,16 +7,13 @@ import { join } from 'node:path'
 import * as z from 'zod'
 import { type Tool, defineTool } from '../core/types.js'
 
-/**
- * 获取 tasks.json 的路径
- * 优先使用 DEVOPS_ROOT_PATH 环境变量，回退到相对路径计算
- */
+/** Resolve tasks.json path from env or fallback. */
 function getTasksFilePath(): string {
   const devopsRoot = process.env.DEVOPS_ROOT_PATH
   if (devopsRoot) {
     return join(devopsRoot, 'data', 'tasks.json')
   }
-  // 回退：假设从 dist/tools/ 运行
+  // Fallback: assume running from dist/tools/
   return join(process.cwd(), 'data', 'tasks.json')
 }
 
@@ -59,7 +53,7 @@ export const getTaskHistoryTool = defineTool({
 
     try {
       const data = JSON.parse(readFileSync(getTasksFilePath(), 'utf-8'))
-      // 兼容两种格式：数组 [...] 或对象 {tasks: [...]}
+      // Support both formats: array [...] or object {tasks: [...]}
       let tasks: Array<{
         id: string
         status: string
@@ -132,7 +126,7 @@ export const submitSummaryTool = defineTool({
     }
 
     try {
-      // 通过 API 更新任务的 summary 字段
+      // Update task summary via API
       const response = await fetch(`${apiUrl}/task/${taskId}`, {
         method: 'PATCH',
         headers: {

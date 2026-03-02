@@ -73,6 +73,22 @@ Tools are defined in `src/tools/`. To add a new tool:
 3. Register it in the appropriate tool array
 4. Update `src/core/tool-policy.ts` with the new tool's category
 
+## GitHub App Setup (Development)
+
+For GitHub-related features (PR creation, Issue creation, git push), the bot supports GitHub App authentication:
+
+1. Create a GitHub App at https://github.com/settings/apps/new
+2. Required permissions: Contents (read+write), Pull requests (read+write), Issues (read+write)
+3. Generate a private key and save it locally
+4. Set in `.env.local`:
+   ```
+   GITHUB_APP_ID=123456
+   GITHUB_APP_PRIVATE_KEY_PATH=/path/to/private-key.pem
+   ```
+5. Install the App on your org/repos
+
+The bot falls back to `GITHUB_TOKEN` (PAT) if no App is configured.
+
 ## Reporting Issues
 
 When reporting bugs, please include:

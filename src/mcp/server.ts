@@ -1,13 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Server 实现
- * 作为工具集合供 Claude Code CLI 或其他 MCP Client 使用
- *
- * 使用方式:
- *   node dist/mcp/server.js
- *
- * 或通过 Claude Code CLI 配置:
- *   claude --mcp-config ./mcp.json
+ * MCP Server — exposes tool collection for MCP clients.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -29,7 +22,7 @@ async function main() {
     console.error(`  - ${cat}: ${count}`)
   }
 
-  // 使用 McpServer API
+  // Create MCP server
   const server = new McpServer(
     {
       name: 'devops-bot',
@@ -42,7 +35,7 @@ async function main() {
     },
   )
 
-  // 注册所有工具（直接使用 Zod schema）
+  // Register all tools
   const allTools = registry.getAll()
   for (const tool of allTools) {
     server.registerTool(
