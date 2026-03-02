@@ -120,7 +120,7 @@ export class WebhookServer {
       .runTask(
         taskId,
         prompt,
-        { ...data.metadata, title: data.title },
+        { ...data.metadata, title: data.title, description: data.description },
         data.createdBy,
         effectivePath,
       )

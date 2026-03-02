@@ -237,7 +237,7 @@ export class TaskRunner {
       const { prUrl } = await this.sandboxManager.finalizeSandbox(
         sandbox,
         taskTitle,
-        task?.prompt,
+        (task?.metadata?.description as string) || task?.summary?.thinking,
         task?.createdBy,
         task?.metadata?.issueNumber as number | undefined,
       )

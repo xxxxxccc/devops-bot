@@ -412,16 +412,12 @@ ${data.attachments
 `
       : ''
 
-  const langLine = data.language
-    ? `**Output Language:** ${data.language} — all commit messages, PR descriptions, and submit_summary thinking MUST be in this language.\n`
-    : ''
-
   const prompt = `## Task
 
 **Task ID:** ${data.taskId}
 **Title:** ${data.title}
 ${data.todoId ? `**Todo ID:** ${data.todoId}` : ''}
-${langLine}
+
 ${data.description || data.title}
 ${attachmentsSection}
 ---
