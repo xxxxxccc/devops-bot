@@ -468,6 +468,7 @@ export class ApprovalPoller {
           issueSource: meta.source,
           imChatId: meta.imChatId ?? undefined,
           imMessageId: meta.imMessageId ?? undefined,
+          language: synthesized.language,
         },
       })
 

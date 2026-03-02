@@ -67,8 +67,8 @@ export async function detectRepo(projectPath: string): Promise<RepoInfo> {
     const sshMatch = url.match(/git@([^:]+):([^/]+)\/([^/.]+)/)
     if (sshMatch) return classifyHost(sshMatch[1], sshMatch[2], sshMatch[3])
 
-    // HTTPS: https://host/owner/repo.git
-    const httpsMatch = url.match(/https?:\/\/([^/]+)\/([^/]+)\/([^/.]+)/)
+    // HTTPS: https://[user:pass@]host/owner/repo.git — strip optional credentials
+    const httpsMatch = url.match(/https?:\/\/(?:[^@]+@)?([^/]+)\/([^/]+)\/([^/.]+)/)
     if (httpsMatch) return classifyHost(httpsMatch[1], httpsMatch[2], httpsMatch[3])
 
     return UNKNOWN_REPO
@@ -331,25 +331,29 @@ async function plainPush(opts: Pick<PROptions, 'worktreePath' | 'branchName'>): 
 }
 
 /**
- * Push a GitHub branch using an authenticated HTTPS remote URL when available.
+ * Push a GitHub branch with token-based auth via HTTP header.
+ * Uses `http.extraHeader` to avoid embedding credentials in the URL,
+ * which newer libcurl versions reject.
  * Falls back to default push (SSH / credential helper) if no token.
  */
 async function githubPush(opts: PROptions, info: RepoInfo): Promise<void> {
   const { getGitHubClient } = await import('../github/client.js')
   const client = await getGitHubClient()
-  const authUrl = await client.getAuthenticatedRemoteUrl(info.owner, info.repo, info.host)
+  const token = await client.getToken(info.owner, info.repo)
 
-  if (authUrl) {
+  if (token) {
     const git = simpleGit(opts.worktreePath)
-    const tempRemote = 'origin-auth'
-    try {
-      await git.addRemote(tempRemote, authUrl)
-      await git.push([tempRemote, opts.branchName, '--set-upstream'])
-    } finally {
-      await git.removeRemote(tempRemote).catch(() => {
-        // Best-effort cleanup of temp remote
-      })
-    }
+    const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64')
+    const httpsRemote = `https://${info.host}/${info.owner}/${info.repo}.git`
+
+    await git.raw([
+      '-c',
+      `http.extraHeader=Authorization: Basic ${basicAuth}`,
+      'push',
+      '--set-upstream',
+      httpsRemote,
+      opts.branchName,
+    ])
   } else {
     await plainPush(opts)
   }

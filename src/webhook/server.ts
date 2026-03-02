@@ -105,10 +105,13 @@ export class WebhookServer {
   }): Promise<string> {
     const taskId = `task-${Date.now()}`
 
+    const language = (data.metadata?.language as string) || undefined
+
     const prompt = buildTaskPrompt({
       taskId,
       title: data.title,
       description: data.description,
+      language,
       attachments: data.attachments,
     })
 

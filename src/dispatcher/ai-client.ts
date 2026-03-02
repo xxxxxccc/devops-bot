@@ -46,6 +46,8 @@ export interface DispatcherResponse {
   issueLabels?: string[]
   /** Git URL for add_project intent */
   gitUrl?: string
+  /** Detected language of the user message (e.g. "zh-CN", "en") */
+  language?: string
 }
 
 /* ------------------------------------------------------------------ */

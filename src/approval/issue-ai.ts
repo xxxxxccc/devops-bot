@@ -32,6 +32,8 @@ export interface SynthesizedTask {
   description: string
   feasible: boolean
   reason?: string
+  /** Detected language of the issue discussion (e.g. "zh-CN", "en") */
+  language?: string
 }
 
 const SYSTEM_PROMPT = [
@@ -43,7 +45,8 @@ const SYSTEM_PROMPT = [
   '  "title": "concise task title (max 100 chars)",',
   '  "description": "detailed, actionable description",',
   '  "feasible": true or false,',
-  '  "reason": "explanation if not feasible"',
+  '  "reason": "explanation if not feasible",',
+  "  \"language\": \"detected language of the issue discussion (e.g. 'zh-CN', 'en', 'ja')\"",
   '}',
   '',
   'Rules for the description:',
@@ -52,6 +55,7 @@ const SYSTEM_PROMPT = [
   '- Mention specific files, modules, or APIs if the discussion references them',
   '- Focus on the LATEST consensus — later comments may override earlier requirements',
   '- Filter out meta-discussion (approval requests, status updates, bot-generated content)',
+  '- Output title and description in the same language as the majority of the issue discussion',
   '',
   'Set feasible=false when:',
   '- The issue is too vague to produce a specific code change',
@@ -184,6 +188,7 @@ function parseResponse(text: string): SynthesizedTask | null {
         description: obj.description,
         feasible: obj.feasible !== false,
         reason: obj.reason ?? undefined,
+        language: typeof obj.language === 'string' ? obj.language : undefined,
       }
     }
   } catch {
@@ -199,6 +204,7 @@ function parseResponse(text: string): SynthesizedTask | null {
             description: obj.description,
             feasible: obj.feasible !== false,
             reason: obj.reason ?? undefined,
+            language: typeof obj.language === 'string' ? obj.language : undefined,
           }
         }
       } catch {

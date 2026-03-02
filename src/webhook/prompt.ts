@@ -42,6 +42,7 @@ export function buildExecutorSystemPrompt(params: {
   taskHasFigma: boolean
   skills?: SkillEntry[]
   sandbox?: { branchName: string; baseBranch: string; submodules?: string[] }
+  language?: string
 }): string {
   const sections = [
     buildIdentitySection('executor'),
@@ -53,9 +54,24 @@ export function buildExecutorSystemPrompt(params: {
     params.taskHasJira ? buildJiraSection() : [],
     params.taskHasFigma ? buildFigmaSection() : [],
     buildProjectRulesSection(params.projectRules),
+    params.language ? buildLanguageSection(params.language) : [],
     buildRuntimeSection(),
   ]
   return sections.flat().join('\n')
+}
+
+function buildLanguageSection(language: string): string[] {
+  return [
+    '',
+    '## Output Language',
+    '',
+    `The user communicates in **${language}**.`,
+    'All human-facing output MUST be in the same language:',
+    '- Commit messages',
+    '- PR title and description',
+    '- submit_summary thinking',
+    'Code comments and variable names remain in English.',
+  ]
 }
 
 /* ------------------------------------------------------------------ */
@@ -373,6 +389,7 @@ export function buildTaskPrompt(data: {
   title: string
   description?: string
   todoId?: string
+  language?: string
   attachments?: Array<{ filename: string; originalname: string; path: string; mimetype?: string }>
 }): string {
   // Attachments — typed labels and usage hints
@@ -395,12 +412,16 @@ ${data.attachments
 `
       : ''
 
+  const langLine = data.language
+    ? `**Output Language:** ${data.language} — all commit messages, PR descriptions, and submit_summary thinking MUST be in this language.\n`
+    : ''
+
   const prompt = `## Task
 
 **Task ID:** ${data.taskId}
 **Title:** ${data.title}
 ${data.todoId ? `**Todo ID:** ${data.todoId}` : ''}
-
+${langLine}
 ${data.description || data.title}
 ${attachmentsSection}
 ---

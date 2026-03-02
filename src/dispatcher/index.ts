@@ -385,6 +385,7 @@ export class Dispatcher {
         issueNumber: issue?.number,
         riskReason: response.riskReason,
         tier: 'execute_task',
+        language: response.language,
       },
       attachments: msg.attachments.map((a) => ({
         filename: a.filename,

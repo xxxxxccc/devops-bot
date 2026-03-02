@@ -329,6 +329,7 @@ export class TaskRunner {
             submodules: sandbox.submodules,
           }
         : undefined,
+      language: (task.metadata?.language as string) || undefined,
     })
     let output = ''
     let lastBroadcast = 0

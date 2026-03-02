@@ -34,8 +34,8 @@ export function parseGitUrl(url: string): ParsedGitUrl | undefined {
   const sshMatch = trimmed.match(/git@([^:]+):([^/]+)\/([^/.]+?)(?:\.git)?$/)
   if (sshMatch) return { host: sshMatch[1], owner: sshMatch[2], repo: sshMatch[3] }
 
-  // HTTPS: https://host/owner/repo.git or https://host/owner/repo
-  const httpsMatch = trimmed.match(/https?:\/\/([^/]+)\/([^/]+)\/([^/.]+?)(?:\.git)?$/)
+  // HTTPS: https://[user:pass@]host/owner/repo.git — strip optional credentials
+  const httpsMatch = trimmed.match(/https?:\/\/(?:[^@]+@)?([^/]+)\/([^/]+)\/([^/.]+?)(?:\.git)?$/)
   if (httpsMatch) return { host: httpsMatch[1], owner: httpsMatch[2], repo: httpsMatch[3] }
 
   return undefined
@@ -83,13 +83,26 @@ export class RepoManager {
       return localPath
     }
 
-    const cloneUrl = await this.getCloneUrl(gitUrl)
     mkdirSync(localPath, { recursive: true })
 
     try {
       log.info('Cloning repository', { gitUrl, localPath })
       const git = simpleGit()
-      await git.clone(cloneUrl, localPath, ['--single-branch'])
+      const authHeader = await this.getAuthHeader(gitUrl)
+
+      if (authHeader) {
+        await git.raw([
+          '-c',
+          `http.extraHeader=${authHeader}`,
+          'clone',
+          '--single-branch',
+          gitUrl,
+          localPath,
+        ])
+      } else {
+        await git.clone(gitUrl, localPath, ['--single-branch'])
+      }
+
       log.info('Clone complete', { localPath })
       return localPath
     } catch (err) {
@@ -105,10 +118,17 @@ export class RepoManager {
    * Sync a local repository to the latest remote state.
    * Fetches and hard-resets to origin/default_branch.
    */
-  async syncRepo(localPath: string, defaultBranch = 'main'): Promise<boolean> {
+  async syncRepo(localPath: string, defaultBranch = 'main', gitUrl?: string): Promise<boolean> {
     try {
       const git = simpleGit(localPath)
-      await git.fetch(['origin', '--prune'])
+      const authHeader = gitUrl ? await this.getAuthHeader(gitUrl) : undefined
+
+      if (authHeader) {
+        await git.raw(['-c', `http.extraHeader=${authHeader}`, 'fetch', 'origin', '--prune'])
+      } else {
+        await git.fetch(['origin', '--prune'])
+      }
+
       await git.reset(['--hard', `origin/${defaultBranch}`])
       log.info('Repository synced', { localPath, branch: defaultBranch })
       return true
@@ -136,27 +156,27 @@ export class RepoManager {
   }
 
   /**
-   * Get clone URL, using authenticated HTTPS for GitHub repos when App is configured.
+   * Build an HTTP Authorization header for GitHub repos when App is configured.
+   * Returns undefined for non-GitHub repos or when no token is available.
    */
-  private async getCloneUrl(gitUrl: string): Promise<string> {
+  private async getAuthHeader(gitUrl: string): Promise<string | undefined> {
     const parsed = parseGitUrl(gitUrl)
-    if (!parsed) return gitUrl
+    if (!parsed) return undefined
 
     if (parsed.host.includes('github')) {
       try {
         const { getGitHubClient } = await import('../github/client.js')
         const client = await getGitHubClient()
-        const authUrl = await client.getAuthenticatedRemoteUrl(
-          parsed.owner,
-          parsed.repo,
-          parsed.host,
-        )
-        if (authUrl) return authUrl
+        const token = await client.getToken(parsed.owner, parsed.repo)
+        if (token) {
+          const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64')
+          return `Authorization: Basic ${basicAuth}`
+        }
       } catch {
-        // Fall through to original URL
+        // Fall through — no auth header
       }
     }
 
-    return gitUrl
+    return undefined
   }
 }
