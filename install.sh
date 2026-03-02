@@ -234,11 +234,18 @@ fi
 # Install production dependencies
 info "Installing dependencies..."
 cd "$INSTALL_DIR"
+INSTALL_OK=false
 case "$PKG_MGR" in
-  pnpm) pnpm install --prod --frozen-lockfile --silent 2>/dev/null || pnpm install --prod --silent ;;
-  bun)  bun install --production --silent ;;
-  npm)  npm install --omit=dev --silent ;;
+  pnpm) { pnpm install --prod --frozen-lockfile 2>&1 || pnpm install --prod 2>&1; } && INSTALL_OK=true ;;
+  bun)  bun install --production 2>&1 && INSTALL_OK=true ;;
+  npm)  npm install --omit=dev 2>&1 && INSTALL_OK=true ;;
 esac
+
+if [ "$INSTALL_OK" = false ]; then
+  error "Dependency installation failed — try running manually:"
+  echo "  cd $INSTALL_DIR && $PKG_MGR install --prod"
+  exit 1
+fi
 
 success "DevOps Bot installed to $INSTALL_DIR"
 echo ""
