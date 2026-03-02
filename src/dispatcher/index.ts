@@ -73,8 +73,9 @@ export class Dispatcher {
     const { store, extractor, retriever } = await this.getMemoryTools()
     const memoryConfig = getDispatcherMemoryConfig()
 
-    // Resolve project context for this chat
+    // Resolve project context for this chat (re-clones if missing after upgrade)
     const resolver = await this.server.getProjectResolver()
+    await resolver.ensureProjectsCloned(msg.chatId)
     const chatProjects = resolver.getProjectsForChat(msg.chatId)
     const fallbackPath = resolver.getFallbackProject()
     const effectivePath = chatProjects.length > 0 ? chatProjects[0].localPath : fallbackPath || ''

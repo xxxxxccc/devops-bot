@@ -5,6 +5,8 @@
  * and resolves the selected project to a local path.
  */
 
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { createLogger } from '../infra/logger.js'
 import { type ProjectRecord, ProjectRegistry } from './registry.js'
 import { RepoManager, gitUrlToProjectId } from './repo-manager.js'
@@ -67,6 +69,21 @@ export class ProjectResolver {
   }
 
   /**
+   * Ensure all registered projects for a chat are cloned locally.
+   * Re-clones any whose local directory is missing (e.g. after upgrade).
+   */
+  async ensureProjectsCloned(chatId: string): Promise<void> {
+    const projects = this.registry.getForChat(chatId)
+    for (const p of projects) {
+      if (!p.gitUrl) continue
+      if (!existsSync(join(p.localPath, '.git'))) {
+        log.warn('Project directory missing, re-cloning', { id: p.id, gitUrl: p.gitUrl })
+        await this.repoManager.ensureRepo(p.gitUrl)
+      }
+    }
+  }
+
+  /**
    * Clone (if needed), register, and bind a project to a chat.
    * Used by the `add_project` intent.
    */
@@ -79,6 +96,11 @@ export class ProjectResolver {
 
     const existing = this.registry.getById(projectId)
     if (existing) {
+      // Re-clone if local directory was lost (e.g. after upgrade)
+      if (!existsSync(join(existing.localPath, '.git'))) {
+        log.warn('Registered project missing locally, re-cloning', { projectId })
+        await this.repoManager.ensureRepo(existing.gitUrl)
+      }
       this.registry.associateChat(chatId, projectId)
       return {
         id: existing.id,
@@ -127,7 +149,17 @@ export class ProjectResolver {
       return undefined
     }
 
-    await this.repoManager.syncRepo(project.localPath, project.defaultBranch)
+    // Re-clone if local directory was lost (e.g. after upgrade)
+    if (!existsSync(join(project.localPath, '.git'))) {
+      log.warn('Project directory missing, re-cloning before sync', { projectId })
+      const cloned = await this.repoManager.ensureRepo(project.gitUrl)
+      if (!cloned) {
+        log.error('Re-clone failed', { projectId, gitUrl: project.gitUrl })
+        return undefined
+      }
+    }
+
+    await this.repoManager.syncRepo(project.localPath, project.defaultBranch, project.gitUrl)
     this.registry.updateSyncTime(projectId)
 
     if (chatId) {
