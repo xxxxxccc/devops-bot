@@ -70,7 +70,8 @@ export class ProjectResolver {
 
   /**
    * Ensure all registered projects for a chat are cloned locally.
-   * Re-clones any whose local directory is missing (e.g. after upgrade).
+   * Re-clones any whose local directory is missing (e.g. after upgrade)
+   * and re-detects the default branch.
    */
   async ensureProjectsCloned(chatId: string): Promise<void> {
     const projects = this.registry.getForChat(chatId)
@@ -78,7 +79,10 @@ export class ProjectResolver {
       if (!p.gitUrl) continue
       if (!existsSync(join(p.localPath, '.git'))) {
         log.warn('Project directory missing, re-cloning', { id: p.id, gitUrl: p.gitUrl })
-        await this.repoManager.ensureRepo(p.gitUrl)
+        const cloned = await this.repoManager.ensureRepo(p.gitUrl)
+        if (cloned) {
+          await this.refreshDefaultBranch(p.id, cloned)
+        }
       }
     }
   }
@@ -99,14 +103,18 @@ export class ProjectResolver {
       // Re-clone if local directory was lost (e.g. after upgrade)
       if (!existsSync(join(existing.localPath, '.git'))) {
         log.warn('Registered project missing locally, re-cloning', { projectId })
-        await this.repoManager.ensureRepo(existing.gitUrl)
+        const cloned = await this.repoManager.ensureRepo(existing.gitUrl)
+        if (cloned) {
+          await this.refreshDefaultBranch(projectId, cloned)
+        }
       }
       this.registry.associateChat(chatId, projectId)
+      const refreshed = this.registry.getById(projectId)!
       return {
-        id: existing.id,
-        gitUrl: existing.gitUrl,
-        localPath: existing.localPath,
-        defaultBranch: existing.defaultBranch,
+        id: refreshed.id,
+        gitUrl: refreshed.gitUrl,
+        localPath: refreshed.localPath,
+        defaultBranch: refreshed.defaultBranch,
         lastUsed: new Date().toISOString(),
       }
     }
@@ -143,7 +151,7 @@ export class ProjectResolver {
       return this.fallbackProjectPath
     }
 
-    const project = this.registry.getById(projectId)
+    let project = this.registry.getById(projectId)
     if (!project) {
       log.error('Project not found in registry', { projectId })
       return undefined
@@ -157,6 +165,8 @@ export class ProjectResolver {
         log.error('Re-clone failed', { projectId, gitUrl: project.gitUrl })
         return undefined
       }
+      await this.refreshDefaultBranch(projectId, cloned)
+      project = this.registry.getById(projectId)!
     }
 
     await this.repoManager.syncRepo(project.localPath, project.defaultBranch, project.gitUrl)
@@ -181,6 +191,13 @@ export class ProjectResolver {
    */
   getProject(projectId: string): ProjectRecord | undefined {
     return this.registry.getById(projectId)
+  }
+
+  /** Re-detect and update the default branch after a fresh clone. */
+  private async refreshDefaultBranch(projectId: string, localPath: string): Promise<void> {
+    const branch = await this.repoManager.detectDefaultBranch(localPath)
+    this.registry.updateDefaultBranch(projectId, branch)
+    log.info('Default branch updated after re-clone', { projectId, branch })
   }
 
   /** Get the underlying project registry (for approval poller repo scanning). */
