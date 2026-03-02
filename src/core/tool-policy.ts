@@ -32,7 +32,14 @@ export interface ToolPolicy {
 const PROFILES: Record<string, ToolPolicy> = {
   /** Read-only file inspection tools + skill management (Layer 1 default) */
   'read-only': {
-    allow: ['group:file-read', 'group:search', 'group:skill'],
+    allow: [
+      'group:file-read',
+      'group:search',
+      'group:skill',
+      'group:git-read',
+      'group:platform-read',
+      'group:platform-write',
+    ],
   },
   /** All tools enabled (Layer 2 default) */
   full: {},
@@ -69,6 +76,7 @@ const CATEGORY_GROUPS: Record<string, string[]> = {
   'file-read': ['read_file', 'list_directory'],
   'file-write': ['write_file', 'edit_file', 'delete_file'],
   search: ['grep_search', 'glob_search'],
+  'git-read': ['git_status', 'git_diff', 'git_log', 'git_show', 'git_branch'],
   git: [
     'git_status',
     'git_diff',
@@ -86,6 +94,8 @@ const CATEGORY_GROUPS: Record<string, string[]> = {
   shell: ['shell_exec', 'shell_stream', 'npm'],
   task: ['get_task_history', 'submit_summary'],
   skill: ['find_skills', 'list_installed_skills', 'install_skill', 'create_skill'],
+  'platform-read': ['list_issues', 'get_issue', 'list_prs', 'get_pr'],
+  'platform-write': ['edit_issue', 'comment_issue'],
 }
 
 /* ------------------------------------------------------------------ */

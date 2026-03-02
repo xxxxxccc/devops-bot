@@ -8,6 +8,8 @@
 
 import * as z from 'zod'
 import { fileTools } from '../tools/file-tools.js'
+import { gitReadTools } from '../tools/git-tools.js'
+import { platformTools } from '../tools/platform-tools.js'
 import { skillTools } from '../tools/skill-tools.js'
 import type { Tool, ToolContext } from '../core/types.js'
 import type { AIToolDefinition } from '../providers/types.js'
@@ -34,7 +36,7 @@ function toAITool(tool: Tool): AIToolDefinition {
 
 const DEFAULT_DISPATCHER_POLICY: ToolPolicy = resolveProfile('read-only')
 
-const ALL_SOURCE_TOOLS: Tool[] = [...fileTools, ...skillTools]
+const ALL_SOURCE_TOOLS: Tool[] = [...fileTools, ...gitReadTools, ...platformTools, ...skillTools]
 
 /**
  * Get the filtered set of tools for the dispatcher, in provider-neutral format.

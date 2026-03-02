@@ -1,5 +1,9 @@
 /**
  * Git operation tools.
+ *
+ * Two flavors:
+ *   - Static tools (gitReadTools): use context.projectPath, suitable for dispatcher
+ *   - Factory tools (createGitTools): bound to a fixed path, for sandbox/task runner
  */
 
 import { simpleGit } from 'simple-git'
@@ -19,6 +23,10 @@ const gitLogSchema = z.object({
   count: z.number().optional().describe('Number of commits (default: 10)'),
   author: z.string().optional().describe('Filter by author'),
   grep: z.string().optional().describe('Search in commit messages'),
+  ref: z
+    .string()
+    .optional()
+    .describe('Branch or ref to show log for (e.g. "dev", "v1.3.9..v1.4.0")'),
 })
 
 const gitShowSchema = z.object({
@@ -60,7 +68,88 @@ const gitStashSchema = z.object({
   pop: z.boolean().optional().describe('Pop the latest stash instead of creating'),
 })
 
-// ============ Tools Factory ============
+// ============ Static read-only tools (context-based) ============
+
+export const gitReadTools: Tool[] = [
+  defineTool({
+    name: 'git_status',
+    category: 'git',
+    description: 'Get the current git status (branch, modified files, staged changes)',
+    schema: emptySchema,
+    async execute(_args, context) {
+      const git = simpleGit(context.projectPath)
+      const status = await git.status()
+      return JSON.stringify(
+        {
+          branch: status.current,
+          ahead: status.ahead,
+          behind: status.behind,
+          staged: status.staged,
+          modified: status.modified,
+          untracked: status.not_added,
+          conflicted: status.conflicted,
+        },
+        null,
+        2,
+      )
+    },
+  }),
+  defineTool({
+    name: 'git_diff',
+    category: 'git',
+    description: 'Get the current git diff or diff between refs',
+    schema: gitDiffSchema,
+    async execute(args, context) {
+      const git = simpleGit(context.projectPath)
+      const options: string[] = []
+      if (args.staged) options.push('--staged')
+      if (args.file) options.push('--', args.file)
+      const diff = await git.diff(options)
+      return diff || 'No changes'
+    },
+  }),
+  defineTool({
+    name: 'git_log',
+    category: 'git',
+    description:
+      'Get recent git commits. Use ref param for specific branches or ranges (e.g. "v1.3.9..v1.4.0")',
+    schema: gitLogSchema,
+    async execute(args, context) {
+      const git = simpleGit(context.projectPath)
+      const logArgs: string[] = [`-n${args.count || 20}`, '--pretty=format:%h | %ai | %an: %s']
+      if (args.author) logArgs.push(`--author=${args.author}`)
+      if (args.grep) logArgs.push(`--grep=${args.grep}`)
+      if (args.ref) logArgs.push(args.ref)
+      const result = await git.raw(['log', ...logArgs])
+      return result || 'No commits found'
+    },
+  }),
+  defineTool({
+    name: 'git_show',
+    category: 'git',
+    description: 'Show details and diff of a specific commit',
+    schema: gitShowSchema,
+    async execute(args, context) {
+      const git = simpleGit(context.projectPath)
+      const commit = args.commit || 'HEAD'
+      return await git.show([commit, '--stat'])
+    },
+  }),
+  defineTool({
+    name: 'git_branch',
+    category: 'git',
+    description: 'List branches (local and optionally remote)',
+    schema: gitBranchSchema,
+    async execute(args, context) {
+      const git = simpleGit(context.projectPath)
+      const branches = await git.branch(args.all ? ['-a'] : [])
+      const current = branches.current
+      return branches.all.map((b: string) => `${b === current ? '* ' : '  '}${b}`).join('\n')
+    },
+  }),
+]
+
+// ============ Factory tools (path-bound, for sandbox) ============
 
 export const createGitTools = (projectPath: string): Tool[] => {
   const git = simpleGit(projectPath)
@@ -108,18 +197,12 @@ export const createGitTools = (projectPath: string): Tool[] => {
       description: 'Get recent git commits',
       schema: gitLogSchema,
       async execute(args) {
-        const log = await git.log({
-          maxCount: args.count || 10,
-          ...(args.author ? { author: args.author } : {}),
-          ...(args.grep ? { grep: args.grep } : {}),
-        })
-
-        return log.all
-          .map(
-            (c: { hash: string; date: string; author_name: string; message: string }) =>
-              `${c.hash.slice(0, 7)} | ${c.date} | ${c.author_name}: ${c.message}`,
-          )
-          .join('\n')
+        const logArgs: string[] = [`-n${args.count || 10}`, '--pretty=format:%h | %ai | %an: %s']
+        if (args.author) logArgs.push(`--author=${args.author}`)
+        if (args.grep) logArgs.push(`--grep=${args.grep}`)
+        if (args.ref) logArgs.push(args.ref)
+        const result = await git.raw(['log', ...logArgs])
+        return result || 'No commits found'
       },
     }),
     defineTool({

@@ -271,6 +271,241 @@ export class GitHubClient {
     return result !== undefined
   }
 
+  /** List issues with optional state and label filters. */
+  async listIssues(
+    owner: string,
+    repo: string,
+    opts: { state?: 'open' | 'closed' | 'all'; labels?: string; per_page?: number } = {},
+    host = 'github.com',
+  ): Promise<
+    Array<{
+      number: number
+      title: string
+      state: string
+      labels: string[]
+      html_url: string
+      created_at: string
+      user: string
+    }>
+  > {
+    const token = await this.getToken(owner, repo)
+    if (!token) return []
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const params = new URLSearchParams({
+      state: opts.state || 'open',
+      per_page: String(opts.per_page || 30),
+    })
+    if (opts.labels) params.set('labels', opts.labels)
+
+    const data = await this.apiGet<
+      Array<{
+        number: number
+        title: string
+        state: string
+        labels: Array<{ name: string }>
+        html_url: string
+        created_at: string
+        user: { login: string } | null
+        pull_request?: unknown
+      }>
+    >(`${apiBase}/repos/${owner}/${repo}/issues?${params}`, token, 'listIssues')
+
+    if (!data) return []
+    return data
+      .filter((i) => !i.pull_request)
+      .map((i) => ({
+        number: i.number,
+        title: i.title,
+        state: i.state,
+        labels: (i.labels ?? []).map((l) => l.name),
+        html_url: i.html_url,
+        created_at: i.created_at,
+        user: i.user?.login ?? 'unknown',
+      }))
+  }
+
+  /** Update an issue's state, title, or body. */
+  async updateIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    opts: { state?: 'open' | 'closed'; title?: string; body?: string },
+    host = 'github.com',
+  ): Promise<boolean> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    return this.apiPatch(
+      `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}`,
+      token,
+      opts,
+      'updateIssue',
+    )
+  }
+
+  /** List pull requests with optional state filter. */
+  async listPRs(
+    owner: string,
+    repo: string,
+    opts: { state?: 'open' | 'closed' | 'all'; per_page?: number } = {},
+    host = 'github.com',
+  ): Promise<
+    Array<{
+      number: number
+      title: string
+      state: string
+      html_url: string
+      user: string
+      head: string
+      base: string
+      draft: boolean
+      created_at: string
+    }>
+  > {
+    const token = await this.getToken(owner, repo)
+    if (!token) return []
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const params = new URLSearchParams({
+      state: opts.state || 'open',
+      per_page: String(opts.per_page || 30),
+    })
+
+    const data = await this.apiGet<
+      Array<{
+        number: number
+        title: string
+        state: string
+        html_url: string
+        user: { login: string } | null
+        head: { ref: string }
+        base: { ref: string }
+        draft: boolean
+        created_at: string
+      }>
+    >(`${apiBase}/repos/${owner}/${repo}/pulls?${params}`, token, 'listPRs')
+
+    if (!data) return []
+    return data.map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      state: pr.state,
+      html_url: pr.html_url,
+      user: pr.user?.login ?? 'unknown',
+      head: pr.head.ref,
+      base: pr.base.ref,
+      draft: pr.draft,
+      created_at: pr.created_at,
+    }))
+  }
+
+  /** Get detailed info about a single pull request. */
+  async getPR(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    host = 'github.com',
+  ): Promise<
+    | {
+        number: number
+        title: string
+        state: string
+        body: string
+        html_url: string
+        user: string
+        head: string
+        base: string
+        draft: boolean
+        mergeable: boolean | null
+        changed_files: number
+        additions: number
+        deletions: number
+        created_at: string
+        updated_at: string
+      }
+    | undefined
+  > {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const data = await this.apiGet<{
+      number: number
+      title: string
+      state: string
+      body: string | null
+      html_url: string
+      user: { login: string } | null
+      head: { ref: string }
+      base: { ref: string }
+      draft: boolean
+      mergeable: boolean | null
+      changed_files: number
+      additions: number
+      deletions: number
+      created_at: string
+      updated_at: string
+    }>(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`, token, 'getPR')
+
+    if (!data) return undefined
+    return {
+      number: data.number,
+      title: data.title,
+      state: data.state,
+      body: data.body ?? '',
+      html_url: data.html_url,
+      user: data.user?.login ?? 'unknown',
+      head: data.head.ref,
+      base: data.base.ref,
+      draft: data.draft,
+      mergeable: data.mergeable,
+      changed_files: data.changed_files,
+      additions: data.additions,
+      deletions: data.deletions,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    }
+  }
+
+  private async apiPatch(
+    url: string,
+    token: string,
+    body: Record<string, unknown>,
+    label: string,
+  ): Promise<boolean> {
+    try {
+      const response = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const errBody = await response.text()
+        log.error(`GitHub API ${label} error`, {
+          status: response.status,
+          body: errBody.slice(0, 500),
+        })
+        return false
+      }
+
+      log.info(`GitHub API ${label} success`)
+      return true
+    } catch (error) {
+      log.error(`GitHub API ${label} request failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
+  }
+
   private async apiGet<T>(url: string, token: string, label: string): Promise<T | undefined> {
     this.lastStatus = 0
     try {
