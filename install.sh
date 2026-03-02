@@ -114,31 +114,49 @@ download_release() {
     wget -q -O "$tmpdir/$tarball" "$url"
   fi
 
-  # Preserve user data across upgrades
+  # Preserve ALL user data across upgrades
   if [ -d "$INSTALL_DIR" ]; then
     info "Upgrading existing installation (preserving data & config)..."
-    [ -d "$INSTALL_DIR/data" ]       && mv "$INSTALL_DIR/data"       "$tmpdir/data_bak"
-    [ -d "$INSTALL_DIR/models" ]     && mv "$INSTALL_DIR/models"     "$tmpdir/models_bak"
-    [ -d "$INSTALL_DIR/skills" ]     && mv "$INSTALL_DIR/skills"     "$tmpdir/skills_bak"
-    [ -f "$INSTALL_DIR/.env.local" ] && cp "$INSTALL_DIR/.env.local" "$tmpdir/env_bak"
+    mkdir -p "$tmpdir/bak"
+
+    # Directories to preserve
+    for dir in data models skills repos; do
+      [ -d "$INSTALL_DIR/$dir" ] && mv "$INSTALL_DIR/$dir" "$tmpdir/bak/$dir"
+    done
+
+    # Config and credential files
+    [ -f "$INSTALL_DIR/.env.local" ] && cp "$INSTALL_DIR/.env.local" "$tmpdir/bak/.env.local"
+    for f in "$INSTALL_DIR"/*.pem "$INSTALL_DIR"/*.key "$INSTALL_DIR"/*.p12 "$INSTALL_DIR"/*.cert; do
+      [ -f "$f" ] && cp "$f" "$tmpdir/bak/"
+    done
+
     rm -rf "$INSTALL_DIR"
   fi
 
   mkdir -p "$INSTALL_DIR"
   tar xzf "$tmpdir/$tarball" --strip-components=1 -C "$INSTALL_DIR"
 
-  # Restore user data
-  [ -d "$tmpdir/data_bak" ]   && mv "$tmpdir/data_bak"   "$INSTALL_DIR/data"
-  [ -d "$tmpdir/models_bak" ] && mv "$tmpdir/models_bak" "$INSTALL_DIR/models"
-  [ -f "$tmpdir/env_bak" ]    && mv "$tmpdir/env_bak"    "$INSTALL_DIR/.env.local"
-
-  # Merge skills: bundled skills are updated, user-added skills are preserved
-  if [ -d "$tmpdir/skills_bak" ]; then
-    for user_skill in "$tmpdir/skills_bak"/*/; do
-      skill_name="$(basename "$user_skill")"
-      [ -d "$INSTALL_DIR/skills/$skill_name" ] && continue
-      cp -r "$user_skill" "$INSTALL_DIR/skills/$skill_name"
+  # Restore preserved data
+  if [ -d "$tmpdir/bak" ]; then
+    for dir in data models repos; do
+      [ -d "$tmpdir/bak/$dir" ] && mv "$tmpdir/bak/$dir" "$INSTALL_DIR/$dir"
     done
+    [ -f "$tmpdir/bak/.env.local" ] && mv "$tmpdir/bak/.env.local" "$INSTALL_DIR/.env.local"
+
+    # Restore credential files
+    for f in "$tmpdir/bak"/*.pem "$tmpdir/bak"/*.key "$tmpdir/bak"/*.p12 "$tmpdir/bak"/*.cert; do
+      [ -f "$f" ] && cp "$f" "$INSTALL_DIR/"
+    done
+
+    # Merge skills: bundled skills are updated, user-added skills are preserved
+    if [ -d "$tmpdir/bak/skills" ]; then
+      mkdir -p "$INSTALL_DIR/skills"
+      for user_skill in "$tmpdir/bak/skills"/*/; do
+        skill_name="$(basename "$user_skill")"
+        [ -d "$INSTALL_DIR/skills/$skill_name" ] && continue
+        cp -r "$user_skill" "$INSTALL_DIR/skills/$skill_name"
+      done
+    fi
   fi
 
   trap - EXIT
@@ -281,19 +299,27 @@ configure_ai() {
 
 # --- Target Project ---
 configure_project() {
-  if grep -q "^TARGET_PROJECT_PATH=/path/to/your/project" "$ENV_FILE" || ! grep -q "^TARGET_PROJECT_PATH=.\+" "$ENV_FILE"; then
-    echo ""
-    warn "Target project path is required"
-    echo "  This is the codebase that AI will work on"
-    echo ""
-    echo -ne "${YELLOW}Enter target project path [$(pwd)]: ${NC}"
-    read -r PROJECT_PATH
-    PROJECT_PATH="${PROJECT_PATH:-$(pwd)}"
-
-    sed -i.bak "s|^TARGET_PROJECT_PATH=.*|TARGET_PROJECT_PATH=$PROJECT_PATH|" "$ENV_FILE"
-    rm -f "$ENV_FILE.bak"
-    success "Project path: $PROJECT_PATH"
+  # Skip if already configured (single-project) or intentionally commented out (multi-project)
+  if grep -q "^TARGET_PROJECT_PATH=.\+" "$ENV_FILE" 2>/dev/null \
+     && ! grep -q "^TARGET_PROJECT_PATH=/path/to/your/project" "$ENV_FILE" 2>/dev/null; then
+    return 0
   fi
+  if grep -q "^# TARGET_PROJECT_PATH" "$ENV_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  echo ""
+  warn "Target project path is required"
+  echo "  This is the codebase that AI will work on"
+  echo "  (Leave blank and comment out TARGET_PROJECT_PATH later for multi-project mode)"
+  echo ""
+  echo -ne "${YELLOW}Enter target project path [$(pwd)]: ${NC}"
+  read -r PROJECT_PATH
+  PROJECT_PATH="${PROJECT_PATH:-$(pwd)}"
+
+  sed -i.bak "s|^TARGET_PROJECT_PATH=.*|TARGET_PROJECT_PATH=$PROJECT_PATH|" "$ENV_FILE"
+  rm -f "$ENV_FILE.bak"
+  success "Project path: $PROJECT_PATH"
 }
 
 # --- IM Platform ---
@@ -582,10 +608,18 @@ configure_embedding() {
 # Only run interactive config if essential settings are missing
 IS_UPGRADE=false
 if grep -q "^AI_API_KEY=.\+" "$ENV_FILE" 2>/dev/null \
-   && grep -q "^TARGET_PROJECT_PATH=.\+" "$ENV_FILE" 2>/dev/null \
-   && ! grep -q "^TARGET_PROJECT_PATH=/path/to/your/project" "$ENV_FILE" 2>/dev/null; then
-  IS_UPGRADE=true
-  success "Existing configuration detected — skipping setup wizard"
+   && ! grep -q "^AI_API_KEY=your-api-key" "$ENV_FILE" 2>/dev/null; then
+  # AI key is set — check if project is configured (single-project or multi-project mode)
+  if grep -q "^TARGET_PROJECT_PATH=.\+" "$ENV_FILE" 2>/dev/null \
+     && ! grep -q "^TARGET_PROJECT_PATH=/path/to/your/project" "$ENV_FILE" 2>/dev/null; then
+    IS_UPGRADE=true
+  elif grep -q "^# TARGET_PROJECT_PATH" "$ENV_FILE" 2>/dev/null; then
+    # TARGET_PROJECT_PATH is commented out — multi-project mode
+    IS_UPGRADE=true
+  fi
+  if [ "$IS_UPGRADE" = true ]; then
+    success "Existing configuration detected — skipping setup wizard"
+  fi
 fi
 
 if [ "$IS_UPGRADE" = false ]; then
