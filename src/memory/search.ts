@@ -18,7 +18,7 @@ import { rowToMemoryItem } from './db.js'
 import type { EmbeddingProvider } from './embedding.js'
 import { getOrComputeEmbedding } from './embedding.js'
 import { computeContentHash } from './dedup.js'
-import type { MemorySearchResult } from './types.js'
+import type { MemoryNamespace, MemorySearchResult } from './types.js'
 
 const log = createLogger('search')
 
@@ -48,6 +48,8 @@ export interface SearchOptions {
   vectorWeight?: number
   /** Override keyword weight. Default: 0.3 */
   keywordWeight?: number
+  /** Filter by memory namespace. Default: undefined (all namespaces) */
+  namespace?: MemoryNamespace
 }
 
 /* ------------------------------------------------------------------ */
@@ -74,6 +76,7 @@ export async function hybridSearch(
   const minScore = options?.minScore ?? 0.1
   const vecWeight = options?.vectorWeight ?? VECTOR_WEIGHT
   const kwWeight = options?.keywordWeight ?? KEYWORD_WEIGHT
+  const namespace = options?.namespace
   const candidateLimit = limit * CANDIDATE_MULTIPLIER
 
   // Collect scores per item ID
@@ -84,7 +87,7 @@ export async function hybridSearch(
     try {
       const queryHash = computeContentHash(query)
       const queryEmbedding = await getOrComputeEmbedding(queryHash, query, provider, db)
-      const vecResults = db.vectorSearch(queryEmbedding, projectPath, candidateLimit)
+      const vecResults = db.vectorSearch(queryEmbedding, projectPath, candidateLimit, namespace)
 
       if (vecResults.length > 0) {
         // Normalize distances to [0, 1] similarity scores
@@ -109,7 +112,7 @@ export async function hybridSearch(
   }
 
   // 2. Keyword search
-  const kwResults = db.keywordSearch(query, projectPath, candidateLimit)
+  const kwResults = db.keywordSearch(query, projectPath, candidateLimit, namespace)
   if (kwResults.length > 0) {
     // BM25 rank: lower = more relevant, normalize to [0, 1]
     const ranks = kwResults.map((r) => Math.abs(r.rank))

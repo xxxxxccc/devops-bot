@@ -10,9 +10,14 @@ export type MemoryType =
   | 'issue' // Known issues (bugs, tech debt)
   | 'task_input' // Task requirements (who requested what)
   | 'task_result' // Task results (what files were changed, approach taken)
+  | 'review_feedback' // PR review feedback (specific review comments/findings)
+  | 'review_pattern' // Code patterns/anti-patterns discovered during reviews
+
+/** Memory namespace for isolation */
+export type MemoryNamespace = 'task' | 'review'
 
 /** Where this memory came from */
-export type MemorySource = 'conversation' | 'task' | 'manual'
+export type MemorySource = 'conversation' | 'task' | 'manual' | 'review'
 
 /** A single memory item (extracted fact) */
 export interface MemoryItem {
@@ -28,6 +33,8 @@ export interface MemoryItem {
   sourceId: string
   /** Scope to project */
   projectPath: string
+  /** Namespace for isolation (task vs review). Defaults to 'task'. */
+  namespace?: MemoryNamespace
   /** Who triggered this memory */
   createdBy?: string
   createdAt: string

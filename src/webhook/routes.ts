@@ -130,6 +130,9 @@ export function setupRoutes(
   app.post('/webhook/todo', (req, res) => handleWebhook(req, res, runner, verifySecret))
   app.post('/task', (req, res) => handleManualTask(req, res, runner, verifySecret))
 
+  // GitHub webhook (PR review trigger)
+  app.post('/webhook/github', express.json(), (req, res) => handleGitHubWebhook(req, res, runner))
+
   // Upload
   app.post('/upload', upload.array('files', 10), (req, res) => handleUpload(req, res, verifySecret))
 
@@ -333,6 +336,85 @@ async function handleManualTask(
     attachments: attachments as Array<{ filename: string; originalname: string; path: string }>,
   })
   runner.runTask(taskId, prompt, { title: taskTitle }, createdBy).catch(console.error)
+}
+
+async function handleGitHubWebhook(
+  req: Request,
+  res: Response,
+  _runner: TaskRunner,
+): Promise<void> {
+  const event = req.headers['x-github-event'] as string
+  if (event !== 'pull_request') {
+    res.json({ ignored: true, event })
+    return
+  }
+
+  const { action, pull_request, repository } = req.body
+  if (!pull_request || !repository) {
+    res.status(400).json({ error: 'Invalid payload' })
+    return
+  }
+
+  if (action !== 'opened' && action !== 'synchronize') {
+    res.json({ ignored: true, action })
+    return
+  }
+
+  const triggerMode = process.env.REVIEW_TRIGGER_MODE || 'polling'
+  if (triggerMode !== 'webhook' && triggerMode !== 'both') {
+    res.json({ ignored: true, reason: 'webhook mode not enabled' })
+    return
+  }
+
+  res.json({ accepted: true, prNumber: pull_request.number })
+
+  try {
+    const { getGitHubClient } = await import('../github/client.js')
+    const { ReviewEngine } = await import('../review/engine.js')
+    const { ReviewStore } = await import('../review/store.js')
+    const { MemoryRetriever } = await import('../memory/retriever.js')
+    const { getMemoryStore } = await import('../memory/store.js')
+
+    const githubClient = await getGitHubClient()
+    const memoryStore = await getMemoryStore()
+    const db = (memoryStore as any).getDatabase()
+
+    const reviewStore = new ReviewStore(db)
+    reviewStore.init()
+
+    const headSHA = pull_request.head?.sha || pull_request.updated_at
+    const owner = repository.owner?.login || ''
+    const repo = repository.name || ''
+
+    if (reviewStore.isReviewed(owner, repo, pull_request.number, headSHA)) {
+      return
+    }
+
+    const engine = new ReviewEngine({
+      githubClient,
+      memoryStore,
+      memoryRetriever: new MemoryRetriever(memoryStore),
+    })
+
+    const result = await engine.reviewPR({
+      owner,
+      repo,
+      prNumber: pull_request.number,
+      projectPath: '',
+      trigger: 'webhook',
+    })
+
+    reviewStore.markReviewed(
+      owner,
+      repo,
+      pull_request.number,
+      headSHA,
+      result.reviewId ?? null,
+      'webhook',
+    )
+  } catch (err) {
+    console.error('GitHub webhook review failed:', err)
+  }
 }
 
 function handleUpload(req: Request, res: Response, verifySecret: (req: Request) => boolean): void {

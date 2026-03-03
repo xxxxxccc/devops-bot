@@ -20,6 +20,10 @@ import { buildTaskPrompt } from './prompt.js'
 import type { ProjectResolver } from '../project/resolver.js'
 import { ApprovalStore } from '../approval/store.js'
 import { ApprovalPoller } from '../approval/poller.js'
+import { ReviewStore } from '../review/store.js'
+import { ReviewPoller } from '../review/poller.js'
+import { ReviewEngine } from '../review/engine.js'
+import { MemoryRetriever } from '../memory/retriever.js'
 import { getGitHubClient } from '../github/client.js'
 import { createLogger } from '../infra/logger.js'
 
@@ -33,6 +37,7 @@ export class WebhookServer {
   private _projectResolver: ProjectResolver | null = null
   private _approvalStore: ApprovalStore | null = null
   private _approvalPoller: ApprovalPoller | null = null
+  private _reviewPoller: ReviewPoller | null = null
 
   constructor(config: WebhookConfig) {
     this.config = config
@@ -173,10 +178,57 @@ export class WebhookServer {
     }
   }
 
+  private async initReviewPoller(): Promise<void> {
+    const triggerMode = process.env.REVIEW_TRIGGER_MODE || 'polling'
+    if (triggerMode !== 'polling' && triggerMode !== 'both') return
+
+    try {
+      const { getMemoryStore } = await import('../memory/store.js')
+      const store = await getMemoryStore()
+      const db = (store as any).getDatabase()
+
+      const githubClient = await getGitHubClient()
+      const reviewStore = new ReviewStore(db)
+      reviewStore.init()
+
+      const engine = new ReviewEngine({
+        githubClient,
+        memoryStore: store,
+        memoryRetriever: new MemoryRetriever(store),
+      })
+
+      const intervalMs = Number.parseInt(process.env.REVIEW_POLL_INTERVAL_MS || '1800000', 10)
+
+      this._reviewPoller = new ReviewPoller(
+        {
+          reviewEngine: engine,
+          reviewStore,
+          githubClient,
+          getProjectRegistry: async () => {
+            try {
+              const resolver = await this.getProjectResolver()
+              return resolver.getRegistry()
+            } catch {
+              return null
+            }
+          },
+        },
+        intervalMs,
+      )
+      this._reviewPoller.start()
+      log.info('Review poller initialized successfully')
+    } catch (err) {
+      log.error('Failed to initialize review poller', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   /** Start the Express server and approval poller */
   async start(): Promise<void> {
     await this.runner.init()
     await this.initApprovalPoller()
+    await this.initReviewPoller()
 
     this.app.listen(this.config.port, () => {
       console.log(`

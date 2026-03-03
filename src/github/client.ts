@@ -469,6 +469,149 @@ export class GitHubClient {
     }
   }
 
+  /** Get files changed in a pull request (includes patch content). */
+  async getPRFiles(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    host = 'github.com',
+  ): Promise<
+    Array<{
+      filename: string
+      status: string
+      additions: number
+      deletions: number
+      patch: string
+    }>
+  > {
+    const token = await this.getToken(owner, repo)
+    if (!token) return []
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const data = await this.apiGet<
+      Array<{
+        filename: string
+        status: string
+        additions: number
+        deletions: number
+        patch?: string
+      }>
+    >(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`, token, 'getPRFiles')
+
+    if (!data) return []
+    return data.map((f) => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+      patch: f.patch ?? '',
+    }))
+  }
+
+  /** Get the full unified diff of a pull request. */
+  async getPRDiff(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    host = 'github.com',
+  ): Promise<string | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    try {
+      const response = await fetch(`${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3.diff',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      })
+      if (!response.ok) {
+        log.error('GitHub API getPRDiff error', {
+          status: response.status,
+          body: (await response.text()).slice(0, 500),
+        })
+        return undefined
+      }
+      return await response.text()
+    } catch (error) {
+      log.error('GitHub API getPRDiff request failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return undefined
+    }
+  }
+
+  /**
+   * Submit a pull request review with optional line-level comments.
+   * event: APPROVE | REQUEST_CHANGES | COMMENT
+   */
+  async createReview(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    opts: {
+      body: string
+      event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+      comments?: Array<{ path: string; line: number; body: string }>
+    },
+    host = 'github.com',
+  ): Promise<{ id: number } | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+
+    return this.apiPost<{ id: number }>(
+      `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`,
+      token,
+      {
+        body: opts.body,
+        event: opts.event,
+        comments: opts.comments ?? [],
+      },
+      (data) => ({ id: data.id as number }),
+      'createReview',
+    )
+  }
+
+  /** List review comments on a pull request. */
+  async listReviewComments(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    host = 'github.com',
+  ): Promise<Array<{ id: number; path: string; line: number | null; body: string; user: string }>> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return []
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const data = await this.apiGet<
+      Array<{
+        id: number
+        path: string
+        line: number | null
+        body: string
+        user: { login: string } | null
+      }>
+    >(
+      `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`,
+      token,
+      'listReviewComments',
+    )
+
+    if (!data) return []
+    return data.map((c) => ({
+      id: c.id,
+      path: c.path,
+      line: c.line,
+      body: c.body,
+      user: c.user?.login ?? 'unknown',
+    }))
+  }
+
   /**
    * Check whether an issue has any linked open pull requests
    * by inspecting timeline cross-reference events.

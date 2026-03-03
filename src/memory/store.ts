@@ -33,6 +33,7 @@ import type {
   ConversationRecord,
   MemoryCategorySummary,
   MemoryItem,
+  MemoryNamespace,
   MemorySearchResult,
   MemoryType,
 } from './types.js'
@@ -53,6 +54,8 @@ const MEMORY_TYPES: MemoryType[] = [
   'issue',
   'task_input',
   'task_result',
+  'review_feedback',
+  'review_pattern',
 ]
 
 /** Get current month as YYYY-MM (conversations split monthly) */
@@ -178,6 +181,7 @@ export class MemoryStore {
           try {
             const item = JSON.parse(line) as MemoryItem
             const contentHash = computeContentHash(item.content)
+            const ns = item.type.startsWith('review_') ? 'review' : 'task'
             const row: MemoryItemRow = {
               id: item.id,
               type: item.type,
@@ -186,6 +190,7 @@ export class MemoryStore {
               source: item.source,
               source_id: item.sourceId || null,
               project_path: item.projectPath,
+              namespace: (item as any).namespace || ns,
               created_by: item.createdBy || null,
               created_at: item.createdAt,
               reinforcement_count: 1,
@@ -337,6 +342,7 @@ export class MemoryStore {
         source: item.source,
         sourceId: item.sourceId,
         projectPath: item.projectPath,
+        namespace: item.namespace,
         createdBy: item.createdBy,
       })
     }
@@ -345,7 +351,6 @@ export class MemoryStore {
   /** Create and add a single memory item (with dedup) */
   addItem(partial: Omit<MemoryItem, 'id' | 'createdAt'>): MemoryItem {
     if (!this.db) {
-      // Fallback if db not initialized
       return {
         ...partial,
         id: `mem-${randomUUID().slice(0, 8)}`,
@@ -362,6 +367,7 @@ export class MemoryStore {
       source: partial.source,
       source_id: partial.sourceId || null,
       project_path: partial.projectPath,
+      namespace: partial.namespace || 'task',
       created_by: partial.createdBy || null,
       created_at: new Date().toISOString(),
       reinforcement_count: 1,
@@ -420,6 +426,16 @@ export class MemoryStore {
     if (!this.db) return []
     const provider = await this.ensureEmbeddings()
     return hybridSearch(query, projectPath, this.db, provider, options)
+  }
+
+  /** Search within a specific namespace */
+  async searchInNamespace(
+    query: string,
+    projectPath: string,
+    namespace: MemoryNamespace,
+    options?: Omit<SearchOptions, 'namespace'>,
+  ): Promise<MemorySearchResult[]> {
+    return this.search(query, projectPath, { ...options, namespace })
   }
 
   // ========================

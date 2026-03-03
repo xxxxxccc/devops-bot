@@ -67,6 +67,9 @@ export class ApprovalPoller {
       () => this.poll().catch((err) => log.error('Poll cycle failed', { error: String(err) })),
       this.intervalMs,
     )
+
+    // Run first poll immediately on startup
+    this.poll().catch((err) => log.error('Initial approval poll failed', { error: String(err) }))
   }
 
   stop(): void {

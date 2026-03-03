@@ -94,6 +94,7 @@ export class Dispatcher {
     const memoryResults = await retriever.retrieveWithScores(msg.text, effectivePath, {
       limit: memoryConfig.retrievalTopK,
       minScore: memoryConfig.retrievalMinScore,
+      namespace: 'task',
     })
     const memorySummary = retriever.formatSearchResultsAsSummary(memoryResults, {
       maxItems: memoryConfig.maxMemorySummaryItems,
@@ -105,10 +106,30 @@ export class Dispatcher {
       memoryConfig.detailMinScore,
       memoryConfig.maxDetailedMemoryItems,
     )
-    const detailedMemoryContext = retriever.formatAsContext(
+    let detailedMemoryContext = retriever.formatAsContext(
       detailedMemories.map((result) => result.item),
       memoryConfig.maxDetailedMemoryCharsPerItem,
     )
+
+    // Cross-inject high-scoring review patterns when available
+    if (process.env.ENABLE_REVIEW_CROSS_INJECT !== 'false') {
+      try {
+        const reviewResults = await store.searchInNamespace(msg.text, effectivePath, 'review', {
+          limit: 3,
+          minScore: 0.3,
+        })
+        if (reviewResults.length > 0) {
+          const reviewContext = retriever.formatAsContext(
+            reviewResults.map((r) => r.item),
+            160,
+          )
+          detailedMemoryContext += `\n\n## Past Review Insights\n${reviewContext}`
+        }
+      } catch {
+        // Review memory unavailable — not critical
+      }
+    }
+
     const recentChat = store.getRecentMessages(msg.chatId, memoryConfig.recentChatCount)
 
     const parsed = {
@@ -312,6 +333,11 @@ export class Dispatcher {
 
       case 'remove_project': {
         await this.handleRemoveProject(response, msg, ctx)
+        break
+      }
+
+      case 'review_pr': {
+        await this.handleReviewPR(response, msg, ctx)
         break
       }
     }
@@ -800,6 +826,125 @@ export class Dispatcher {
       },
       ctx.projectPath,
     )
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  review_pr: AI-powered PR code review                             */
+  /* ---------------------------------------------------------------- */
+
+  private async handleReviewPR(
+    response: DispatcherResponse,
+    msg: IMMessage,
+    ctx: {
+      thinkingCardId?: string
+      replyTo?: string
+      store: MemoryStore
+      projectPath: string
+      chatProjects: Array<{ id: string; localPath: string }>
+    },
+  ): Promise<void> {
+    if (!response.prNumber) {
+      await this.deliverReply(
+        msg.chatId,
+        'Please specify a PR number to review (e.g. "review PR #123").',
+        ctx.thinkingCardId,
+        undefined,
+        ctx.replyTo,
+      )
+      return
+    }
+
+    const projectPath = await this.resolveProjectPath(
+      response,
+      msg.chatId,
+      ctx.chatProjects,
+      ctx.projectPath,
+    )
+
+    const reply = response.reply || `Starting review of PR #${response.prNumber}...`
+    await this.deliverReply(
+      msg.chatId,
+      reply,
+      ctx.thinkingCardId,
+      { title: '🔍 PR Review', color: 'blue' },
+      ctx.replyTo,
+    )
+
+    try {
+      const { getGitHubClient } = await import('../github/client.js')
+      const { ReviewEngine } = await import('../review/engine.js')
+      const { buildIMCardBody } = await import('../review/comment-builder.js')
+
+      const githubClient = await getGitHubClient()
+      const { detectRepo } = await import('../sandbox/pr-creator.js')
+      const repoInfo = await detectRepo(projectPath)
+
+      if (!repoInfo.owner || !repoInfo.repo) {
+        await this.platform.sendText(
+          msg.chatId,
+          '❌ Could not detect repository info. Make sure the project has a valid git remote.',
+          { replyTo: msg.messageId },
+        )
+        return
+      }
+
+      const engine = new ReviewEngine({
+        githubClient,
+        memoryStore: this.memoryStoreRef,
+        memoryRetriever: this.memoryRetriever,
+      })
+
+      const result = await engine.reviewPR({
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
+        prNumber: response.prNumber,
+        host: repoInfo.host,
+        projectPath,
+        imChatId: msg.chatId,
+        trigger: 'im-command',
+      })
+
+      const pr = await githubClient.getPR(
+        repoInfo.owner,
+        repoInfo.repo,
+        response.prNumber,
+        repoInfo.host,
+      )
+      const prUrl =
+        pr?.html_url ||
+        `https://${repoInfo.host}/${repoInfo.owner}/${repoInfo.repo}/pull/${response.prNumber}`
+      const cardBody = buildIMCardBody(result, prUrl)
+
+      await this.platform.sendCard(
+        msg.chatId,
+        {
+          markdown: cardBody,
+          header: {
+            title: `🔍 Review Complete: PR #${response.prNumber}`,
+            color:
+              result.overallVerdict === 'approve'
+                ? 'green'
+                : result.overallVerdict === 'request_changes'
+                  ? 'red'
+                  : 'blue',
+          },
+        },
+        { replyTo: msg.messageId },
+      )
+
+      ctx.store.addMessage(
+        msg.chatId,
+        {
+          role: 'assistant',
+          content: `Reviewed PR #${response.prNumber}: ${result.overallVerdict} (${result.stats.totalComments} comments)`,
+          timestamp: new Date().toISOString(),
+        },
+        ctx.projectPath,
+      )
+    } catch (err) {
+      const errorMsg = `❌ Failed to review PR #${response.prNumber}: ${err instanceof Error ? err.message : String(err)}`
+      await this.platform.sendText(msg.chatId, errorMsg, { replyTo: msg.messageId })
+    }
   }
 
   /* ---------------------------------------------------------------- */

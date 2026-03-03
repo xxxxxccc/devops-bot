@@ -36,6 +36,7 @@ export interface DispatcherResponse {
     | 'create_issue'
     | 'add_project'
     | 'remove_project'
+    | 'review_pr'
   reply?: string
   projectId?: string
   taskTitle?: string
@@ -46,6 +47,8 @@ export interface DispatcherResponse {
   issueLabels?: string[]
   /** Git URL for add_project intent */
   gitUrl?: string
+  /** PR number for review_pr intent */
+  prNumber?: number
   /** Detected language of the user message (e.g. "zh-CN", "en") */
   language?: string
 }

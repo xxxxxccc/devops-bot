@@ -12,7 +12,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createLogger } from '../infra/logger.js'
-import type { MemoryItem, MemoryType } from './types.js'
+import type { MemoryItem, MemoryNamespace, MemoryType } from './types.js'
 
 const log = createLogger('memory-db')
 
@@ -27,6 +27,8 @@ const MEMORY_TYPES: MemoryType[] = [
   'issue',
   'task_input',
   'task_result',
+  'review_feedback',
+  'review_pattern',
 ]
 
 /* ------------------------------------------------------------------ */
@@ -103,6 +105,7 @@ export interface MemoryItemRow {
   source: string
   source_id: string | null
   project_path: string
+  namespace: string
   created_by: string | null
   created_at: string
   reinforcement_count: number
@@ -156,11 +159,31 @@ export class MemoryDatabase {
 
   private initSchema(): void {
     this.db.exec(SCHEMA_SQL)
+    this.migrateNamespace()
     // FTS5 — might fail if SQLite was compiled without FTS5
     try {
       this.db.exec(FTS_SQL)
     } catch (err) {
       log.warn('FTS5 unavailable, keyword search disabled', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  /** Add namespace column if missing (migration for existing databases). */
+  private migrateNamespace(): void {
+    try {
+      const cols = this.db.prepare("PRAGMA table_info('memory_items')").all() as Array<{
+        name: string
+      }>
+      const hasNamespace = cols.some((c) => c.name === 'namespace')
+      if (!hasNamespace) {
+        this.db.exec("ALTER TABLE memory_items ADD COLUMN namespace TEXT NOT NULL DEFAULT 'task'")
+        this.db.exec('CREATE INDEX IF NOT EXISTS idx_items_namespace ON memory_items(namespace)')
+        log.info('Migrated memory_items: added namespace column')
+      }
+    } catch (err) {
+      log.warn('Namespace migration check failed', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -232,8 +255,8 @@ export class MemoryDatabase {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO memory_items
         (id, type, content, content_hash, source, source_id, project_path,
-         created_by, created_at, reinforcement_count, last_reinforced_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         namespace, created_by, created_at, reinforcement_count, last_reinforced_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     stmt.run(
       item.id,
@@ -243,6 +266,7 @@ export class MemoryDatabase {
       item.source,
       item.source_id,
       item.project_path,
+      item.namespace || 'task',
       item.created_by,
       item.created_at,
       item.reinforcement_count,
@@ -349,10 +373,25 @@ export class MemoryDatabase {
     embedding: number[],
     projectPath: string,
     limit: number,
+    namespace?: MemoryNamespace,
   ): Array<{ id: string; distance: number }> {
     if (this.vectorAvailable) {
       try {
         const blob = vectorToBlob(embedding)
+        if (namespace) {
+          const stmt = this.db.prepare(`
+            SELECT v.id, vec_distance_cosine(v.embedding, ?) AS distance
+            FROM memory_vec v
+            JOIN memory_items m ON m.id = v.id
+            WHERE m.project_path = ? AND m.namespace = ?
+            ORDER BY distance ASC
+            LIMIT ?
+          `)
+          return stmt.all(blob, projectPath, namespace, limit) as Array<{
+            id: string
+            distance: number
+          }>
+        }
         const stmt = this.db.prepare(`
           SELECT v.id, vec_distance_cosine(v.embedding, ?) AS distance
           FROM memory_vec v
@@ -369,8 +408,7 @@ export class MemoryDatabase {
       }
     }
 
-    // Fallback: brute-force cosine distance from embedding_cache
-    return this.inMemoryVectorSearch(embedding, projectPath, limit)
+    return this.inMemoryVectorSearch(embedding, projectPath, limit, namespace)
   }
 
   /**
@@ -382,16 +420,23 @@ export class MemoryDatabase {
     queryEmbedding: number[],
     projectPath: string,
     limit: number,
+    namespace?: MemoryNamespace,
   ): Array<{ id: string; distance: number }> {
     try {
-      const rows = this.db
-        .prepare(
-          `SELECT m.id, e.embedding
+      const sql = namespace
+        ? `SELECT m.id, e.embedding
            FROM memory_items m
            JOIN embedding_cache e ON e.content_hash = m.content_hash
-           WHERE m.project_path = ?`,
-        )
-        .all(projectPath) as Array<{ id: string; embedding: Buffer }>
+           WHERE m.project_path = ? AND m.namespace = ?`
+        : `SELECT m.id, e.embedding
+           FROM memory_items m
+           JOIN embedding_cache e ON e.content_hash = m.content_hash
+           WHERE m.project_path = ?`
+      const rows = (
+        namespace
+          ? this.db.prepare(sql).all(projectPath, namespace)
+          : this.db.prepare(sql).all(projectPath)
+      ) as Array<{ id: string; embedding: Buffer }>
 
       if (rows.length === 0) return []
 
@@ -420,9 +465,9 @@ export class MemoryDatabase {
     query: string,
     projectPath: string,
     limit: number,
+    namespace?: MemoryNamespace,
   ): Array<{ id: string; rank: number }> {
     try {
-      // Sanitize FTS query: wrap each word in quotes to avoid syntax errors
       const terms = query
         .replace(/[^\w\s\u4e00-\u9fff]/g, ' ')
         .split(/\s+/)
@@ -431,6 +476,20 @@ export class MemoryDatabase {
         .join(' OR ')
       if (!terms) return []
 
+      if (namespace) {
+        const stmt = this.db.prepare(`
+          SELECT f.id, bm25(memory_fts) AS rank
+          FROM memory_fts f
+          JOIN memory_items m ON m.id = f.id
+          WHERE memory_fts MATCH ? AND m.project_path = ? AND m.namespace = ?
+          ORDER BY rank ASC
+          LIMIT ?
+        `)
+        return stmt.all(terms, projectPath, namespace, limit) as Array<{
+          id: string
+          rank: number
+        }>
+      }
       const stmt = this.db.prepare(`
         SELECT f.id, bm25(memory_fts) AS rank
         FROM memory_fts f
@@ -540,6 +599,7 @@ export function rowToMemoryItem(row: MemoryItemRow): MemoryItem {
     source: row.source as MemoryItem['source'],
     sourceId: row.source_id || '',
     projectPath: row.project_path,
+    namespace: (row.namespace as MemoryItem['namespace']) || 'task',
     createdBy: row.created_by || undefined,
     createdAt: row.created_at,
     reinforcementCount: row.reinforcement_count,

@@ -26,9 +26,11 @@ import { TaskStore } from '../core/task-store.js'
 import { createLogger } from '../infra/logger.js'
 import { getMemoryStore } from '../memory/store.js'
 import { MemoryExtractor } from '../memory/extractor.js'
+import { MemoryRetriever } from '../memory/retriever.js'
 import { ProjectScanner } from '../prompt/project-scanner.js'
 import { SkillScanner } from '../prompt/skill-scanner.js'
 import { type Sandbox, SandboxManager } from '../sandbox/manager.js'
+import { ReviewEngine } from '../review/engine.js'
 import type { SSEManager } from './sse.js'
 import { buildExecutorSystemPrompt, detectJiraLinks, detectFigmaLinks } from './prompt.js'
 
@@ -264,6 +266,10 @@ export class TaskRunner {
         await this.memorizeTaskLifecycle(updatedTask, projectPath)
         await this.notifyCompletion(updatedTask)
         await this.notifyIssueResult(updatedTask)
+
+        if (prUrl) {
+          void this.triggerSelfReview(updatedTask, prUrl, projectPath)
+        }
       }
 
       log.info(`Task ${taskId} completed`, { prUrl })
@@ -431,6 +437,60 @@ export class TaskRunner {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Self-review (optional, triggered after PR creation)              */
+  /* ---------------------------------------------------------------- */
+
+  private async triggerSelfReview(task: Task, prUrl: string, projectPath: string): Promise<void> {
+    if (process.env.ENABLE_SELF_REVIEW !== 'true') return
+    if (!this.githubClient) return
+
+    const parsed = parsePRUrl(prUrl)
+    if (!parsed) {
+      log.warn('Could not parse PR URL for self-review', { prUrl })
+      return
+    }
+
+    try {
+      const store = await getMemoryStore()
+      const engine = new ReviewEngine({
+        githubClient: this.githubClient,
+        memoryStore: store,
+        memoryRetriever: new MemoryRetriever(store),
+      })
+
+      const result = await engine.reviewPR({
+        owner: parsed.owner,
+        repo: parsed.repo,
+        prNumber: parsed.prNumber,
+        host: parsed.host,
+        projectPath,
+        imChatId: task.metadata?.imChatId as string | undefined,
+        trigger: 'self-review',
+      })
+
+      log.info('Self-review completed', {
+        prNumber: parsed.prNumber,
+        verdict: result.overallVerdict,
+        comments: result.stats.totalComments,
+      })
+
+      if (result.stats.totalComments > 0 && task.metadata?.imChatId && this.imPlatform) {
+        const { buildIMCardBody } = await import('../review/comment-builder.js')
+        const cardBody = buildIMCardBody(result, prUrl)
+        await this.imPlatform.sendCard(task.metadata.imChatId as string, {
+          markdown: cardBody,
+          header: { title: '🔍 Self-Review Complete', color: 'blue' },
+        })
+      }
+    } catch (err) {
+      log.warn('Self-review failed', {
+        prUrl,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Feishu notifications                                             */
   /* ---------------------------------------------------------------- */
 
@@ -578,4 +638,21 @@ export class TaskRunner {
       })
     }
   }
+}
+
+function parsePRUrl(
+  url: string,
+): { owner: string; repo: string; prNumber: number; host: string } | null {
+  // GitHub: https://github.com/owner/repo/pull/123
+  // GHE: https://ghe.example.com/owner/repo/pull/123
+  const match = url.match(/https?:\/\/([^/]+)\/([^/]+)\/([^/]+)\/pull\/(\d+)/)
+  if (match) {
+    return {
+      host: match[1],
+      owner: match[2],
+      repo: match[3],
+      prNumber: parseInt(match[4], 10),
+    }
+  }
+  return null
 }
