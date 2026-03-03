@@ -78,6 +78,8 @@ export class ApprovalPoller {
   }
 
   async poll(): Promise<void> {
+    log.info('Poll cycle started')
+
     this.deps.approvalStore.cleanup(this.expiryDays)
 
     // Path A: bot-created issues from pending_approvals
@@ -85,6 +87,8 @@ export class ApprovalPoller {
 
     // Path B: external issues from repo scanning
     await this.scanRepoIssues()
+
+    log.info('Poll cycle completed')
   }
 
   /* ================================================================== */

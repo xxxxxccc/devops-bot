@@ -21,6 +21,9 @@ import type { ProjectResolver } from '../project/resolver.js'
 import { ApprovalStore } from '../approval/store.js'
 import { ApprovalPoller } from '../approval/poller.js'
 import { getGitHubClient } from '../github/client.js'
+import { createLogger } from '../infra/logger.js'
+
+const log = createLogger('webhook-server')
 
 export class WebhookServer {
   private app = express()
@@ -159,8 +162,12 @@ export class WebhookServer {
         intervalMs,
       )
       this._approvalPoller.start()
+      log.info('Approval poller initialized successfully')
     } catch (err) {
-      console.error('Failed to initialize approval poller:', err)
+      log.error('Failed to initialize approval poller', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      })
     }
   }
 
