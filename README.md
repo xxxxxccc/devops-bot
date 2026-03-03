@@ -472,6 +472,10 @@ devops-bot/
 │   │   ├── manager.ts        # Git worktree sandbox lifecycle
 │   │   ├── pr-creator.ts     # Auto PR/MR creation (GitHub/GitLab)
 │   │   └── issue-creator.ts  # Auto Issue creation (GitHub/GitLab)
+│   ├── approval/
+│   │   ├── store.ts          # SQLite-backed pending approval + processed issue storage
+│   │   ├── poller.ts         # Polling loop: check reactions, scan repos, route to Issue AI
+│   │   └── issue-ai.ts       # Lightweight AI: synthesize actionable task from issue context
 │   ├── review/
 │   │   ├── engine.ts         # PR review orchestrator
 │   │   ├── ai-client.ts      # Review AI calls (TASK_MODEL)
@@ -491,12 +495,15 @@ devops-bot/
 │   ├── mcp/
 │   │   └── server.ts         # MCP server for AI tools
 │   ├── tools/
+│   │   ├── index.ts          # Tool registry and registration
 │   │   ├── file-tools.ts     # File operations
 │   │   ├── git-tools.ts      # Git operations
 │   │   ├── shell-tools.ts    # Shell commands
+│   │   ├── platform-tools.ts # IM platform tools (send message, etc.)
 │   │   ├── skill-tools.ts    # Skill management (find/install/create)
 │   │   └── summary-tool.ts   # AI summary submission
 │   ├── prompt/               # Project/rules/skills scanner
+│   ├── types/                # Type declarations (node-llama-cpp, etc.)
 │   ├── core/
 │   │   ├── task-store.ts     # JSON-based task persistence
 │   │   ├── registry.ts       # MCP tool registry
