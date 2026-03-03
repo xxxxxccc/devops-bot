@@ -5,23 +5,37 @@
  *   1. Fetch PR metadata + files
  *   2. Fetch existing review comments (avoid duplicates)
  *   3. Parse and chunk diffs
- *   4. Load project skill + review memory patterns
- *   5. Call Review AI
- *   6. Submit GitHub review (summary + line comments)
- *   7. Write to review memory namespace
- *   8. Return result
+ *   4. Load review skills (bundled + workspace)
+ *   5. Load target project rules (AGENTS.md / CLAUDE.md)
+ *   6. Load review memory patterns
+ *   7. Call Review AI (with skills + rules + patterns context)
+ *   8. Submit GitHub review (summary + line comments)
+ *   9. Write to review memory namespace
+ *  10. Return result
  */
 
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { createLogger } from '../infra/logger.js'
 import type { GitHubClient } from '../github/client.js'
 import type { MemoryStore } from '../memory/store.js'
 import type { MemoryRetriever } from '../memory/retriever.js'
+import { SkillScanner } from '../prompt/skill-scanner.js'
+import { ProjectScanner } from '../prompt/project-scanner.js'
 import { parsePRFiles } from './diff-parser.js'
 import { reviewWithAI } from './ai-client.js'
 import { buildSummaryBody, buildGitHubComments, toGitHubEvent } from './comment-builder.js'
 import type { ReviewRequest, ReviewResult } from './types.js'
 
 const log = createLogger('review-engine')
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
+const REVIEW_SKILL_NAMES = new Set(['pr-review', 'code-review-analysis', 'code-review'])
+const DEFAULT_WORKSPACE_DIR = join(homedir(), '.devops-bot')
 
 export interface ReviewEngineDeps {
   githubClient: GitHubClient
@@ -61,7 +75,13 @@ export class ReviewEngine {
       return emptyResult(prNumber, owner, repo)
     }
 
-    // 5. Load review context from memory
+    // 5. Load review skills
+    const skillContent = this.loadReviewSkills()
+
+    // 6. Load target project rules (AGENTS.md / CLAUDE.md)
+    const projectRules = this.loadProjectRules(projectPath)
+
+    // 7. Load review context from memory
     let reviewPatterns: string | undefined
     if (this.deps.memoryStore && this.deps.memoryRetriever) {
       try {
@@ -81,7 +101,7 @@ export class ReviewEngine {
       }
     }
 
-    // 6. Call Review AI
+    // 8. Call Review AI
     const result = await reviewWithAI({
       prTitle: pr.title,
       prBody: pr.body,
@@ -93,6 +113,8 @@ export class ReviewEngine {
         line: c.line,
         body: c.body,
       })),
+      projectRules: projectRules || undefined,
+      skillContent: skillContent || undefined,
       reviewPatterns,
     })
 
@@ -100,7 +122,7 @@ export class ReviewEngine {
     result.owner = owner
     result.repo = repo
 
-    // 7. Submit GitHub review
+    // 9. Submit GitHub review
     try {
       const summaryBody = buildSummaryBody(result)
       const ghComments = buildGitHubComments(result.lineComments)
@@ -132,7 +154,7 @@ export class ReviewEngine {
       })
     }
 
-    // 8. Write to review memory
+    // 10. Write to review memory
     this.memorizeReview(result, projectPath)
 
     log.info('PR review complete', {
@@ -142,6 +164,45 @@ export class ReviewEngine {
     })
 
     return result
+  }
+
+  private loadReviewSkills(): string {
+    const bundledRoot = join(__dirname, '..', '..')
+    const workspaceDir = process.env.WORKSPACE_DIR || DEFAULT_WORKSPACE_DIR
+    const scanner = new SkillScanner()
+    const skills = scanner.getSkills(bundledRoot, workspaceDir)
+    const reviewSkills = skills.filter((s) => REVIEW_SKILL_NAMES.has(s.name))
+
+    if (reviewSkills.length === 0) {
+      log.info('No review skills found')
+      return ''
+    }
+
+    const parts: string[] = []
+    for (const skill of reviewSkills) {
+      try {
+        const content = readFileSync(skill.location, 'utf-8')
+        const body = content.replace(/^---\n[\s\S]*?\n---\n?/, '').trim()
+        if (body) {
+          parts.push(`### ${skill.name} (${skill.source})\n\n${body}`)
+        }
+      } catch {
+        log.warn(`Failed to read skill: ${skill.location}`)
+      }
+    }
+
+    if (parts.length > 0) {
+      log.info(
+        `Loaded ${parts.length} review skill(s): ${reviewSkills.map((s) => s.name).join(', ')}`,
+      )
+    }
+
+    return parts.join('\n\n---\n\n')
+  }
+
+  private loadProjectRules(projectPath: string): string {
+    const scanner = new ProjectScanner()
+    return scanner.getProjectRules(projectPath)
   }
 
   private memorizeReview(result: ReviewResult, projectPath: string): void {
