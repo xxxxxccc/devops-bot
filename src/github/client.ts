@@ -469,6 +469,45 @@ export class GitHubClient {
     }
   }
 
+  /**
+   * Check whether an issue has any linked open pull requests
+   * by inspecting timeline cross-reference events.
+   */
+  async hasLinkedOpenPR(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    host = 'github.com',
+  ): Promise<boolean> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const url = `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/timeline?per_page=100`
+
+    const events = await this.apiGet<
+      Array<{
+        event: string
+        source?: {
+          issue?: {
+            number: number
+            state: string
+            pull_request?: unknown
+          }
+        }
+      }>
+    >(url, token, 'hasLinkedOpenPR')
+
+    if (!events) return false
+
+    return events.some(
+      (e) =>
+        e.event === 'cross-referenced' &&
+        e.source?.issue?.pull_request &&
+        e.source.issue.state === 'open',
+    )
+  }
+
   private async apiPatch(
     url: string,
     token: string,

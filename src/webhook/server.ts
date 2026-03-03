@@ -144,6 +144,8 @@ export class WebhookServer {
       const githubClient = await getGitHubClient()
       const intervalMs = Number.parseInt(process.env.APPROVAL_POLL_INTERVAL_MS || '1800000', 10)
 
+      this.runner.setGitHubClient(githubClient)
+
       this._approvalPoller = new ApprovalPoller(
         {
           approvalStore: this._approvalStore,

@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ChildProcess } from 'node:child_process'
 import type { Task, WebhookConfig } from '../core/types.js'
+import type { GitHubClient } from '../github/client.js'
 import { TaskStore } from '../core/task-store.js'
 import { createLogger } from '../infra/logger.js'
 import { getMemoryStore } from '../memory/store.js'
@@ -60,6 +61,8 @@ export class TaskRunner {
 
   // IM platform reference for task notifications
   private imPlatform: import('../channels/types.js').IMPlatform | null = null
+  // GitHub client for posting issue comments on completion/failure
+  private githubClient: GitHubClient | null = null
   // Memory extractor (lazy init)
   private memoryExtractor: MemoryExtractor | null = null
   // Project scanner for reading project rules
@@ -96,6 +99,10 @@ export class TaskRunner {
 
   setIMPlatform(platform: import('../channels/types.js').IMPlatform): void {
     this.imPlatform = platform
+  }
+
+  setGitHubClient(client: GitHubClient): void {
+    this.githubClient = client
   }
 
   /* ---------------------------------------------------------------- */
@@ -256,6 +263,7 @@ export class TaskRunner {
         })
         await this.memorizeTaskLifecycle(updatedTask, projectPath)
         await this.notifyCompletion(updatedTask)
+        await this.notifyIssueResult(updatedTask)
       }
 
       log.info(`Task ${taskId} completed`, { prUrl })
@@ -273,6 +281,7 @@ export class TaskRunner {
         })
         await this.memorizeTaskFailure(failedTask, projectPath)
         await this.notifyFailure(failedTask)
+        await this.notifyIssueResult(failedTask)
       }
 
       log.error(`Task ${taskId} failed`, {
@@ -469,6 +478,51 @@ export class TaskRunner {
       }
     } catch (e) {
       log.warn('Notify failure failed', { error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+
+  private async notifyIssueResult(task: Task): Promise<void> {
+    const meta = task.metadata
+    if (!meta?.issueNumber || !meta?.issueRepoOwner || !meta?.issueRepoName) return
+    if (!this.githubClient) return
+
+    const owner = meta.issueRepoOwner as string
+    const repo = meta.issueRepoName as string
+    const issueNumber = meta.issueNumber as number
+    const host = (meta.issueHost as string) || 'github.com'
+
+    let body: string
+    if (task.status === 'completed' && task.prUrl) {
+      body = `**DevOps Bot:** Task completed.\n\n**PR:** ${task.prUrl}`
+    } else if (task.status === 'completed') {
+      const thinking = task.summary?.thinking
+      const reason = thinking ? `\n\n**Analysis:**\n${thinking}` : ''
+      body = `**DevOps Bot:** Task completed but no code changes were made.${reason}`
+    } else {
+      body = `**DevOps Bot:** Task failed.\n\n**Error:** ${task.error || 'Unknown error'}`
+    }
+
+    try {
+      if ((meta.issuePlatform as string) === 'gitlab') {
+        const token =
+          process.env.GITLAB_TOKEN || process.env.GITLAB_PRIVATE_TOKEN || process.env.GL_TOKEN
+        if (token) {
+          const apiBase = `https://${host}/api/v4`
+          const projectId = encodeURIComponent(`${owner}/${repo}`)
+          await fetch(`${apiBase}/projects/${projectId}/issues/${issueNumber}/notes`, {
+            method: 'POST',
+            headers: { 'PRIVATE-TOKEN': token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body }),
+          })
+        }
+      } else {
+        await this.githubClient.createIssueComment(owner, repo, issueNumber, body, host)
+      }
+    } catch (err) {
+      log.warn('Failed to post issue result comment', {
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 

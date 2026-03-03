@@ -153,6 +153,14 @@ export class ApprovalPoller {
       return
     }
 
+    if (await githubClient.hasLinkedOpenPR(owner, repo, issueNumber, host)) {
+      log.info('Issue has linked open PR, skipping execution', {
+        repo: `${owner}/${repo}`,
+        issueNumber,
+      })
+      return
+    }
+
     // Re-check status to prevent double-trigger
     const current = this.deps.approvalStore.getPending().find((a) => a.id === approval.id)
     if (!current || current.status !== 'pending') return
@@ -214,6 +222,14 @@ export class ApprovalPoller {
       if (issueDetail && !isOpenState(issueDetail.state)) {
         this.deps.approvalStore.markExpired(approval.id)
       }
+      return
+    }
+
+    if (await this.gitlabIssueHasOpenMR(apiBase, projectId, issueNumber, token)) {
+      log.info('GitLab issue has linked open MR, skipping execution', {
+        repo: `${owner}/${repo}`,
+        issueNumber,
+      })
       return
     }
 
@@ -311,6 +327,14 @@ export class ApprovalPoller {
       const hasApproval = reactions.some((r) => APPROVAL_REACTIONS.has(r.content))
       if (!hasApproval) continue
 
+      if (await githubClient.hasLinkedOpenPR(owner, repo, issue.number, host)) {
+        log.info('External issue has linked open PR, skipping', {
+          repo: repoKey,
+          issueNumber: issue.number,
+        })
+        continue
+      }
+
       log.info('Approved external issue found', {
         repo: repoKey,
         issueNumber: issue.number,
@@ -379,6 +403,14 @@ export class ApprovalPoller {
       )
       const hasApproval = emojis?.some((e) => GITLAB_APPROVAL_NAMES.has(e?.name))
       if (!hasApproval) continue
+
+      if (await this.gitlabIssueHasOpenMR(apiBase, projectId, issue.iid, token)) {
+        log.info('External GitLab issue has linked open MR, skipping', {
+          repo: repoKey,
+          issueIid: issue.iid,
+        })
+        continue
+      }
 
       log.info('Approved external GitLab issue found', {
         repo: repoKey,
@@ -470,6 +502,10 @@ export class ApprovalPoller {
           issueUrl: ctx.issueUrl,
           issueNumber: ctx.issueNumber,
           issueSource: meta.source,
+          issueRepoOwner: ctx.repoOwner,
+          issueRepoName: ctx.repoName,
+          issuePlatform: meta.platform,
+          issueHost: meta.host,
           imChatId: meta.imChatId ?? undefined,
           imMessageId: meta.imMessageId ?? undefined,
           language: synthesized.language,
@@ -552,6 +588,26 @@ export class ApprovalPoller {
   /* ================================================================== */
 
   private lastGitlabStatus = 0
+
+  private async gitlabIssueHasOpenMR(
+    apiBase: string,
+    projectId: string,
+    issueIid: number,
+    token: string,
+  ): Promise<boolean> {
+    const mrs = await this.gitlabGet<Array<{ state: string }>>(
+      `${apiBase}/projects/${projectId}/issues/${issueIid}/related_merge_requests`,
+      token,
+    )
+    if (!mrs) {
+      const closedBy = await this.gitlabGet<Array<{ state: string }>>(
+        `${apiBase}/projects/${projectId}/issues/${issueIid}/closed_by`,
+        token,
+      )
+      return closedBy?.some((mr) => mr.state === 'opened') ?? false
+    }
+    return mrs.some((mr) => mr.state === 'opened')
+  }
 
   private async gitlabGet<T>(url: string, token: string): Promise<T | undefined> {
     this.lastGitlabStatus = 0
