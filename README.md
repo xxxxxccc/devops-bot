@@ -40,6 +40,7 @@ flowchart LR
     Router -->|"execute_task"| TaskExec
     Router -->|"propose_task"| TaskExec
     Router -->|"create_issue"| TaskExec
+    Router -->|"review_pr"| ReviewAI["PR Review AI\n(TASK_MODEL)"]
     Router -->|"add_project / remove_project"| TaskExec
     Router <-->|"read/write"| Memory
     MemoryQuery <-->|"retrieve"| Memory
@@ -48,6 +49,8 @@ flowchart LR
     MemoryQuery -->|"reply"| Msg
     TaskExec -->|"status update"| Msg
     Executor -->|"task desc + summary"| Memory
+    ReviewAI -->|"review result"| Msg
+    ReviewAI -->|"review feedback"| Memory
 ```
 
 ### Memory Feedback Loop
@@ -141,6 +144,28 @@ The AI evaluates:
 - **Breaking potential**: Could it break existing functionality?
 - **Design decisions**: Are there multiple valid approaches?
 
+## PR Review
+
+AI-powered code review that provides both high-level summary and line-level comments on pull requests. Uses the `TASK_MODEL` for review analysis.
+
+### Trigger Modes
+
+| Trigger | How it works | IM Notification |
+|---------|-------------|-----------------|
+| **Self-review** | Automatically reviews bot-created PRs after task completion (`ENABLE_SELF_REVIEW=true`) | Yes (originating chat) |
+| **IM command** | User sends "review PR #123" in chat → `review_pr` intent | Yes (originating chat) |
+| **Polling** | Background poller scans registered projects for open PRs (`REVIEW_TRIGGER_MODE=poll`) | No (GitHub PR comment only) |
+| **Webhook** | GitHub webhook on PR open/update (`REVIEW_TRIGGER_MODE=webhook`) | No (GitHub PR comment only) |
+
+### Memory Isolation
+
+Review memories are stored in a separate `review` namespace to avoid polluting task context. Two review-specific memory types are used:
+
+- **`review_feedback`** — per-PR review results
+- **`review_pattern`** — recurring patterns extracted across reviews
+
+When `ENABLE_REVIEW_CROSS_INJECT=true`, `review_pattern` memories are selectively injected into task dispatcher context, creating a feedback loop where common review findings improve future code generation.
+
 ## Features
 
 - **Multi-provider AI**: Anthropic (Claude), OpenAI, or any OpenAI-compatible API (DeepSeek, Groq, Together, etc.)
@@ -152,6 +177,7 @@ The AI evaluates:
 - **Multi-Project**: Manage multiple git repositories from a single chat group
 - **GitHub App Auth**: Secure authentication via GitHub App (replaces PAT)
 - **Three-Tier Tasks**: AI-driven risk assessment routes tasks through execute/propose/issue tiers
+- **PR Review**: AI code review with self-review, IM command, polling, and webhook triggers
 - **Jira Integration**: Auto-fetch issue details when Jira link detected
 - **Figma Integration**: Fetch design context from Figma links
 - **File Attachments**: Screenshots and files from IM messages are passed to Task AI
@@ -375,6 +401,15 @@ POST /upload
 Content-Type: multipart/form-data
 ```
 
+### GitHub Webhook (PR Review)
+```bash
+POST /webhook/github
+Content-Type: application/json
+
+# Receives GitHub pull_request events (opened, synchronize)
+# Requires REVIEW_TRIGGER_MODE=webhook or both
+```
+
 ### Other Endpoints
 ```bash
 GET /tools
@@ -437,6 +472,15 @@ devops-bot/
 │   │   ├── manager.ts        # Git worktree sandbox lifecycle
 │   │   ├── pr-creator.ts     # Auto PR/MR creation (GitHub/GitLab)
 │   │   └── issue-creator.ts  # Auto Issue creation (GitHub/GitLab)
+│   ├── review/
+│   │   ├── engine.ts         # PR review orchestrator
+│   │   ├── ai-client.ts      # Review AI calls (TASK_MODEL)
+│   │   ├── diff-parser.ts    # Diff parsing and filtering
+│   │   ├── prompt.ts         # Review prompt builder
+│   │   ├── comment-builder.ts # GitHub/IM output formatting
+│   │   ├── store.ts          # Reviewed PR deduplication
+│   │   ├── poller.ts         # PR polling mechanism
+│   │   └── types.ts          # Review type definitions
 │   ├── github/
 │   │   ├── app-auth.ts       # GitHub App JWT + installation token
 │   │   └── client.ts         # Unified GitHub API client
@@ -481,6 +525,7 @@ devops-bot/
 - Task execution runs in isolated Git worktree sandboxes
 - Changes are submitted as Draft PRs for human review
 - Protected branches cannot be force-pushed
+- PR reviews use memory namespace isolation to prevent cross-contamination
 - Cost-optimized: fast model for routing, powerful model for execution
 
 ## Contributing

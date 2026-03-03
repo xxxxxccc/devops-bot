@@ -18,6 +18,7 @@ Intents:
 | `create_issue` | Tier 3: high risk/unclear, create Issue for discussion only |
 | `add_project` | Bind a git repository to the current chat |
 | `remove_project` | Unbind a project from the current chat |
+| `review_pr` | Trigger AI code review on a pull request (requires `prNumber`) |
 
 ### Layer 2 — Task Executor (`src/agent/ai-executor.ts`)
 
@@ -66,6 +67,15 @@ src/
 │   ├── store.ts               # SQLite-backed pending approval + processed issue storage
 │   ├── poller.ts              # Polling loop: check reactions, scan repos, route to Issue AI
 │   └── issue-ai.ts            # Lightweight AI: synthesize actionable task from issue context
+├── review/
+│   ├── engine.ts              # PR review orchestrator (fetch diff → AI review → submit)
+│   ├── ai-client.ts           # Review AI calls, reuses TASK_MODEL
+│   ├── diff-parser.ts         # Parse PR diffs, filter irrelevant files, segment large diffs
+│   ├── prompt.ts              # Review AI system/user prompt builder
+│   ├── comment-builder.ts     # Format review output for GitHub API and IM cards
+│   ├── store.ts               # SQLite-backed reviewed_prs deduplication
+│   ├── poller.ts              # Periodic PR scanning + review trigger
+│   └── types.ts               # ReviewRequest, ReviewResult, LineComment, etc.
 ├── github/
 │   ├── app-auth.ts            # GitHub App JWT + installation token lifecycle
 │   └── client.ts              # Unified GitHub API client (App or PAT)
@@ -136,6 +146,32 @@ IM message (Feishu WebSocket / Slack Socket Mode)
        Common:
        - expires stale pending approvals after 7 days
        - prevents double-trigger via processed_issues tracking
+
+  -> review (PR Review AI — multiple trigger paths):
+       Self-review (after task completion):
+       - task-runner detects PR creation → triggers ReviewEngine
+       - review result posted as GitHub PR review + IM notification to originating chat
+       - requires ENABLE_SELF_REVIEW=true
+
+       IM-triggered (review_pr intent):
+       - user sends "review PR #123" in chat
+       - dispatcher routes to ReviewEngine
+       - review result posted as GitHub PR review + IM notification to originating chat
+
+       Polling (REVIEW_TRIGGER_MODE=poll|both):
+       - review-poller scans registered projects for open PRs
+       - deduplicates via reviewed_prs table
+       - review result posted as GitHub PR review only (no IM notification)
+
+       Webhook (REVIEW_TRIGGER_MODE=webhook|both):
+       - POST /webhook/github receives pull_request events (opened, synchronize)
+       - deduplicates via reviewed_prs table
+       - review result posted as GitHub PR review only (no IM notification)
+
+       Memory:
+       - review feedback stored in 'review' namespace (review_feedback, review_pattern types)
+       - review_pattern memories selectively cross-injected into task context
+         when ENABLE_REVIEW_CROSS_INJECT=true
 ```
 
 ## IM Platform Abstraction
@@ -181,3 +217,7 @@ Adapters translate between neutral types (`AIMessage`, `AIContentBlock`, `AITool
 | `ISSUE_AI_MODEL` | No | Model for Issue AI synthesis (default: `DISPATCHER_MODEL`) |
 | `APPROVAL_POLL_INTERVAL_MS` | No | Approval poll interval in ms (default: `1800000`) |
 | `OPENAI_API_KEY` | No | Embedding fallback when local embedding is unavailable |
+| `ENABLE_SELF_REVIEW` | No | Enable auto-review of bot-created PRs (default: `false`) |
+| `REVIEW_TRIGGER_MODE` | No | External PR review trigger: `poll` \| `webhook` \| `both` \| `off` (default: `off`) |
+| `REVIEW_POLL_INTERVAL_MS` | No | PR review poll interval in ms (default: `1800000`) |
+| `ENABLE_REVIEW_CROSS_INJECT` | No | Inject review_pattern memories into task context (default: `false`) |

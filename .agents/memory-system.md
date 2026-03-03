@@ -37,16 +37,29 @@ In multi-project mode, two additional tables are added to `index.sqlite`:
 | AI compatibility | JSONL files auto-regenerated from SQLite |
 | Conversation logs | Append-only monthly JSONL files |
 
+## Memory Namespaces
+
+Memory items are partitioned into namespaces to prevent cross-contamination:
+
+| Namespace | Purpose | Used by |
+|-----------|---------|---------|
+| `task` | Task execution memory (default) | Dispatcher, Task AI |
+| `review` | PR review feedback and patterns | Review AI |
+
+Selective cross-injection: when `ENABLE_REVIEW_CROSS_INJECT=true`, `review_pattern` memories from the `review` namespace are injected into the task dispatcher context to improve future code generation.
+
 ## Memory Types
 
-| Type | Source | Content |
-|------|--------|---------|
-| `decision` | Conversation / Task result | "Chose React over Vue because..." |
-| `context` | Conversation / Task result | "Project uses monorepo with pnpm workspaces" |
-| `preference` | Conversation | "User prefers early returns over nested if" |
-| `issue` | Task failure / Task result | "Login page crashes on timezone edge case" |
-| `task_input` | Task creation | "[Alice] Fix the timezone display bug in settings" |
-| `task_result` | Task completion | "Modified 3 files, added dayjs timezone plugin" |
+| Type | Namespace | Source | Content |
+|------|-----------|--------|---------|
+| `decision` | `task` | Conversation / Task result | "Chose React over Vue because..." |
+| `context` | `task` | Conversation / Task result | "Project uses monorepo with pnpm workspaces" |
+| `preference` | `task` | Conversation | "User prefers early returns over nested if" |
+| `issue` | `task` | Task failure / Task result | "Login page crashes on timezone edge case" |
+| `task_input` | `task` | Task creation | "[Alice] Fix the timezone display bug in settings" |
+| `task_result` | `task` | Task completion | "Modified 3 files, added dayjs timezone plugin" |
+| `review_feedback` | `review` | PR review result | "PR #42: Found 3 issues — SQL injection in auth handler..." |
+| `review_pattern` | `review` | Recurring review findings | "Repeated pattern: missing error handling in API routes" |
 
 ## Memory Item Schema
 
@@ -136,3 +149,4 @@ Layer 2 (Task AI) can still browse memory exports directly via MCP file tools (f
 1. Add the type to `MemoryType` union in `src/memory/types.ts`
 2. Add it to `MEMORY_TYPES` array in `src/memory/store.ts`
 3. Ensure DB/export paths handle the new type (JSONL export auto-generates on write)
+4. Set the appropriate `namespace` — review-related types should use `'review'`, all others default to `'task'`
