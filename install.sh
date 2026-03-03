@@ -2,15 +2,26 @@
 #
 # DevOps Bot — install / upgrade script
 #
-# Install:
+# Install (interactive — recommended for first-time setup):
+#   bash <(curl -fsSL https://raw.githubusercontent.com/xxxxxccc/devops-bot/main/install.sh)
+#
+# Install (non-interactive — installs with defaults, configure .env.local manually):
 #   curl -fsSL https://raw.githubusercontent.com/xxxxxccc/devops-bot/main/install.sh | bash
 #
 # Upgrade:
 #   devops-bot upgrade          (built-in subcommand)
-#   — or re-run the curl above
+#   — or re-run one of the above
 #
 
 set -euo pipefail
+
+# ── Detect interactive mode ──────────────────────────────────────────────────
+# When piped (curl ... | bash), stdin is consumed by the script download,
+# so interactive read prompts won't work. Detect this early.
+IS_INTERACTIVE=true
+if [ ! -t 0 ]; then
+  IS_INTERACTIVE=false
+fi
 
 # ── Configurable ─────────────────────────────────────────────────────────────
 GITHUB_REPO="${DEVOPS_BOT_REPO:-xxxxxccc/devops-bot}"
@@ -31,8 +42,52 @@ echo -e "${BLUE}╚════════════════════�
 echo ""
 
 # =============================================================================
-# 1. Check runtime (Node ≥ 18)
+# 1. Check prerequisites
 # =============================================================================
+
+check_prerequisites() {
+  local missing=()
+
+  # ── Git (required) ──
+  if command -v git &>/dev/null; then
+    success "git $(git --version | sed 's/git version //' | cut -d' ' -f1) found"
+  else
+    missing+=("git")
+    error "git is not installed"
+  fi
+
+  # ── Build toolchain (needed for native modules: better-sqlite3, node-pty) ──
+  local build_warn=()
+
+  if ! command -v python3 &>/dev/null && ! command -v python &>/dev/null; then
+    build_warn+=("python3")
+  fi
+  if ! command -v make &>/dev/null; then
+    build_warn+=("make")
+  fi
+  if ! command -v cc &>/dev/null && ! command -v gcc &>/dev/null; then
+    build_warn+=("gcc/cc")
+  fi
+
+  if [ ${#build_warn[@]} -gt 0 ]; then
+    warn "Missing build tools: ${build_warn[*]}"
+    echo "  These are needed to compile native modules (better-sqlite3, node-pty)."
+    echo "  Pre-built binaries may work, but if install fails, you will need them."
+    echo ""
+    echo "  Install on Debian/Ubuntu:  sudo apt install -y python3 make g++"
+    echo "  Install on RHEL/Amazon:    sudo yum install -y python3 make gcc-c++"
+    echo "  Install on macOS:          xcode-select --install"
+    echo ""
+  fi
+
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo ""
+    echo "  Install on Debian/Ubuntu:  sudo apt install -y ${missing[*]}"
+    echo "  Install on RHEL/Amazon:    sudo yum install -y ${missing[*]}"
+    echo "  Install on macOS:          brew install ${missing[*]}"
+    exit 1
+  fi
+}
 
 detect_runtime() {
   if command -v node &>/dev/null; then
@@ -64,12 +119,15 @@ detect_pkg_manager() {
   fi
 }
 
-info "Checking runtime..."
+info "Checking prerequisites..."
+
+check_prerequisites
 
 if ! detect_runtime; then
   error "Node.js ≥ 18 or Bun is required"
   echo ""
   echo "  Install Node.js:  https://nodejs.org/"
+  echo "  Install via nvm:  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash"
   echo "  Install Bun:      curl -fsSL https://bun.sh/install | bash"
   exit 1
 fi
@@ -630,13 +688,25 @@ if grep -q "^AI_API_KEY=.\+" "$ENV_FILE" 2>/dev/null \
 fi
 
 if [ "$IS_UPGRADE" = false ]; then
-  configure_ai
-  configure_project
-  configure_im
-  configure_jira
-  configure_figma
-  configure_git_token
-  configure_embedding
+  if [ "$IS_INTERACTIVE" = false ]; then
+    warn "Non-interactive mode detected (piped install)"
+    warn "Skipping setup wizard — you must configure $ENV_FILE manually"
+    echo ""
+    echo "  After install, edit the config file:"
+    echo "    ${BLUE}\$EDITOR $ENV_FILE${NC}"
+    echo ""
+    echo "  Or re-run in interactive mode:"
+    echo "    ${BLUE}bash <(curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh)${NC}"
+    echo ""
+  else
+    configure_ai
+    configure_project
+    configure_im
+    configure_jira
+    configure_figma
+    configure_git_token
+    configure_embedding
+  fi
 fi
 
 echo ""
@@ -667,10 +737,15 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   [ -f "$HOME/.bashrc" ] && SHELL_RC="${SHELL_RC:-$HOME/.bashrc}"
 
   if [ -n "$SHELL_RC" ]; then
-    echo -ne "${YELLOW}Add to PATH in $SHELL_RC? [Y/n]: ${NC}"
-    read -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+    if [ "$IS_INTERACTIVE" = true ]; then
+      echo -ne "${YELLOW}Add to PATH in $SHELL_RC? [Y/n]: ${NC}"
+      read -n 1 -r
+      echo
+      ADD_PATH=$([[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]] && echo true || echo false)
+    else
+      ADD_PATH=true
+    fi
+    if [ "$ADD_PATH" = true ]; then
       echo '' >> "$SHELL_RC"
       echo '# DevOps Bot' >> "$SHELL_RC"
       echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"

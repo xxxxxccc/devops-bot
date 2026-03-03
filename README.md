@@ -156,18 +156,73 @@ The AI evaluates:
 - **Figma Integration**: Fetch design context from Figma links
 - **File Attachments**: Screenshots and files from IM messages are passed to Task AI
 
+## Prerequisites
+
+| Dependency | Required | Purpose |
+|-----------|----------|---------|
+| **Node.js ≥ 18** or **Bun** | Yes | Runtime environment |
+| **git** | Yes | Repository management, branch/commit/push operations |
+| **curl** or **wget** | Yes | Download release artifacts during install |
+| **Python 3** | Recommended | Required by `node-gyp` to compile native modules (`better-sqlite3`, `node-pty`) |
+| **make + gcc/g++** | Recommended | C/C++ build toolchain for native modules |
+
+<details>
+<summary>Install commands by platform</summary>
+
+**Debian / Ubuntu**
+```bash
+sudo apt update && sudo apt install -y git curl python3 make g++
+# Node.js (via NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+**RHEL / Amazon Linux**
+```bash
+sudo yum install -y git curl python3 make gcc-c++
+# Node.js (via NodeSource)
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+sudo yum install -y nodejs
+```
+
+**macOS**
+```bash
+# Xcode command line tools (includes git, make, clang)
+xcode-select --install
+# Node.js (via Homebrew)
+brew install node
+```
+
+**Any platform (via nvm)**
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+nvm install 22
+```
+</details>
+
+> **Note:** Pre-built binaries for native modules are bundled in release artifacts.
+> Python and build tools are only needed if pre-built binaries are unavailable for your platform.
+
 ## Quick Start
 
 ### Option 1: One-line Install (Recommended)
 
 ```bash
+# Interactive mode (recommended for first-time setup)
+bash <(curl -fsSL https://raw.githubusercontent.com/xxxxxccc/devops-bot/main/install.sh)
+
+# Or non-interactive (install with defaults, configure .env.local manually)
 curl -fsSL https://raw.githubusercontent.com/xxxxxccc/devops-bot/main/install.sh | bash
 ```
+
+> **Note:** The interactive mode (`bash <(...)`) is recommended for first-time installs,
+> as it guides you through AI provider, project path, and IM platform configuration.
+> The piped mode (`curl ... | bash`) will install with defaults and skip the setup wizard.
 
 The installer will:
 - Download the latest pre-built release from GitHub
 - Detect your runtime (Node.js ≥ 18 or Bun)
-- Guide you to configure AI provider, project path, and IM platform
+- Guide you to configure AI provider, project path, and IM platform (interactive mode)
 - Optionally configure Jira, Figma, and local vector search
 - Set up `devops-bot` command globally
 
