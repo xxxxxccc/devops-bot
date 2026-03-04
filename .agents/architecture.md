@@ -150,22 +150,35 @@ IM message (Feishu WebSocket / Slack Socket Mode)
   -> review (PR Review AI — multiple trigger paths):
        Self-review (after task completion):
        - task-runner detects PR creation → triggers ReviewEngine
+       - fetches full PR discussion context (issue comments + review summaries via getPRConversation)
        - review result posted as GitHub PR review + IM notification to originating chat
        - requires ENABLE_SELF_REVIEW=true
+       - AUTO-FIX LOOP (self-review only):
+         - if verdict=request_changes and critical/warning > 0:
+           1. verify PR still open (skip if merged/closed)
+           2. createSandboxOnBranch — checkout existing PR branch
+           3. buildReviewFixPrompt — structured fix instructions from review comments + PR discussion
+           4. executeAI — Task AI fixes issues
+           5. push to same branch (no new PR)
+           6. re-review (recursive, max 2 rounds)
+         - controlled by ENABLE_SELF_REVIEW, no extra env vars
 
        IM-triggered (review_pr intent):
        - user sends "review PR #123" in chat
        - dispatcher routes to ReviewEngine
+       - fetches full PR discussion context
        - review result posted as GitHub PR review + IM notification to originating chat
 
        Polling (REVIEW_TRIGGER_MODE=poll|both):
        - review-poller scans registered projects for open PRs
        - deduplicates via reviewed_prs table
+       - fetches full PR discussion context
        - review result posted as GitHub PR review only (no IM notification)
 
        Webhook (REVIEW_TRIGGER_MODE=webhook|both):
        - POST /webhook/github receives pull_request events (opened, synchronize)
        - deduplicates via reviewed_prs table
+       - fetches full PR discussion context
        - review result posted as GitHub PR review only (no IM notification)
 
        Memory:

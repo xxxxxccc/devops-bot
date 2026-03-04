@@ -503,3 +503,74 @@ ${attachmentsSection}
 
 **Remember:** When calling \`submit_summary\`, use task_id="${newTaskId}"`
 }
+
+/* ------------------------------------------------------------------ */
+/*  Review auto-fix prompt                                             */
+/* ------------------------------------------------------------------ */
+
+import type { ReviewResult, LineComment as ReviewLineComment } from '../review/types.js'
+import type { PRDiscussionContext } from '../review/prompt.js'
+
+export function buildReviewFixPrompt(params: {
+  taskId: string
+  review: ReviewResult
+  round: number
+  discussion?: PRDiscussionContext
+}): string {
+  const { review, round, taskId, discussion } = params
+
+  const fixable = review.lineComments.filter(
+    (c: ReviewLineComment) => c.severity === 'critical' || c.severity === 'warning',
+  )
+
+  const parts: string[] = [
+    '## Review Fix Task',
+    '',
+    `**Task ID:** ${taskId}`,
+    `**PR:** #${review.prNumber} (${review.owner}/${review.repo})`,
+    `**Fix Round:** ${round}`,
+    '',
+    '### Review Summary',
+    '',
+    review.summary,
+    '',
+    `### Issues to Fix (${fixable.length} critical/warning)`,
+    '',
+  ]
+
+  for (const c of fixable) {
+    parts.push(`- **[${c.severity.toUpperCase()}]** \`${c.path}:${c.line}\`: ${c.body}`)
+  }
+
+  if (discussion) {
+    const { issueComments, reviewSummaries } = discussion
+    const hasDiscussion = issueComments.length > 0 || reviewSummaries.length > 0
+    if (hasDiscussion) {
+      parts.push('', '### PR Discussion (consider these when fixing)', '')
+      for (const r of reviewSummaries.slice(0, 10)) {
+        parts.push(`- [${r.user}] (review: ${r.state}) ${r.body.slice(0, 300)}`)
+      }
+      for (const c of issueComments.slice(0, 15)) {
+        parts.push(`- [${c.user}] ${c.body.slice(0, 300)}`)
+      }
+    }
+  }
+
+  parts.push(
+    '',
+    '### Instructions',
+    '',
+    '- Fix ONLY the critical and warning issues listed above',
+    '- Do NOT refactor unrelated code or add new features',
+    '- Do NOT create new files unless absolutely required by the fix',
+    '- After fixing, run type checks and lint checks to verify',
+    '- Commit with message: `fix: address review feedback (round ' + round + ')`',
+    '- You MUST call `submit_summary` at the end',
+    '',
+    '---',
+    '',
+    `**Remember:** When you are done, you MUST call \`submit_summary\` with task_id="${taskId}"`,
+  )
+
+  return parts.join('\n')
+}

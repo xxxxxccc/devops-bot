@@ -40,6 +40,8 @@ export interface ReviewResult {
   lineComments: LineComment[]
   /** GitHub review ID if submitted. */
   reviewId?: number
+  /** Head branch name of the PR (for auto-fix checkout). */
+  prBranch?: string
   /** Stats */
   stats: {
     filesReviewed: number

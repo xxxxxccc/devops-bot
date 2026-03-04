@@ -68,6 +68,9 @@ export class ReviewEngine {
     // 3. Fetch existing review comments to avoid duplicates
     const existingComments = await gh.listReviewComments(owner, repo, prNumber, host)
 
+    // 3b. Fetch full PR discussion (issue comments + review summaries)
+    const discussion = await gh.getPRConversation(owner, repo, prNumber, host)
+
     // 4. Parse and chunk diffs
     const parsed = parsePRFiles(files)
     if (parsed.chunks.length === 0) {
@@ -113,6 +116,7 @@ export class ReviewEngine {
         line: c.line,
         body: c.body,
       })),
+      discussion,
       projectRules: projectRules || undefined,
       skillContent: skillContent || undefined,
       reviewPatterns,
@@ -121,6 +125,7 @@ export class ReviewEngine {
     result.prNumber = prNumber
     result.owner = owner
     result.repo = repo
+    result.prBranch = pr.head
 
     // 9. Submit GitHub review
     try {

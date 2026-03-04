@@ -613,6 +613,72 @@ export class GitHubClient {
   }
 
   /**
+   * Fetch full PR discussion context: issue-level comments + review summaries.
+   * Complements `listReviewComments` (which only returns line-level review comments).
+   * GitHub treats PRs as issues, so `/issues/{n}/comments` works for PR discussions.
+   */
+  async getPRConversation(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    host = 'github.com',
+  ): Promise<{
+    issueComments: Array<{ user: string; body: string; createdAt: string }>
+    reviewSummaries: Array<{
+      user: string
+      body: string
+      state: string
+      createdAt: string
+    }>
+  }> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return { issueComments: [], reviewSummaries: [] }
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+
+    const [rawComments, rawReviews] = await Promise.all([
+      this.apiGet<
+        Array<{ user: { login: string } | null; body: string | null; created_at: string }>
+      >(
+        `${apiBase}/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
+        token,
+        'getPRIssueComments',
+      ),
+      this.apiGet<
+        Array<{
+          user: { login: string } | null
+          body: string | null
+          state: string
+          submitted_at: string
+        }>
+      >(
+        `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`,
+        token,
+        'getPRReviews',
+      ),
+    ])
+
+    const issueComments = (rawComments ?? [])
+      .filter((c) => c.body?.trim())
+      .map((c) => ({
+        user: c.user?.login ?? 'unknown',
+        body: c.body ?? '',
+        createdAt: c.created_at ?? '',
+      }))
+
+    const reviewSummaries = (rawReviews ?? [])
+      .filter((r) => r.body?.trim())
+      .map((r) => ({
+        user: r.user?.login ?? 'unknown',
+        body: r.body ?? '',
+        state: r.state ?? '',
+        createdAt: r.submitted_at ?? '',
+      }))
+
+    return { issueComments, reviewSummaries }
+  }
+
+  /**
    * Check whether an issue has any linked open pull requests
    * by inspecting timeline cross-reference events.
    */

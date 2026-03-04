@@ -32,7 +32,12 @@ import { SkillScanner } from '../prompt/skill-scanner.js'
 import { type Sandbox, SandboxManager } from '../sandbox/manager.js'
 import { ReviewEngine } from '../review/engine.js'
 import type { SSEManager } from './sse.js'
-import { buildExecutorSystemPrompt, detectJiraLinks, detectFigmaLinks } from './prompt.js'
+import {
+  buildExecutorSystemPrompt,
+  buildReviewFixPrompt,
+  detectJiraLinks,
+  detectFigmaLinks,
+} from './prompt.js'
 
 const log = createLogger('task-runner')
 
@@ -437,8 +442,10 @@ export class TaskRunner {
   }
 
   /* ---------------------------------------------------------------- */
-  /*  Self-review (optional, triggered after PR creation)              */
+  /*  Self-review + auto-fix loop                                      */
   /* ---------------------------------------------------------------- */
+
+  private static readonly MAX_FIX_ROUNDS = 2
 
   private async triggerSelfReview(task: Task, prUrl: string, projectPath: string): Promise<void> {
     if (process.env.ENABLE_SELF_REVIEW !== 'true') return
@@ -450,41 +457,166 @@ export class TaskRunner {
       return
     }
 
+    await this.selfReviewAndFix(task, parsed, projectPath, prUrl, 0)
+  }
+
+  /**
+   * Recursive self-review + auto-fix loop.
+   *
+   * Flow per round:
+   *   1. Run review → get verdict + comments
+   *   2. If approve / comment-only / max rounds reached → stop
+   *   3. Otherwise: build fix prompt, create sandbox on PR branch, run AI fix, push, re-review
+   */
+  private async selfReviewAndFix(
+    task: Task,
+    prInfo: { owner: string; repo: string; prNumber: number; host: string },
+    projectPath: string,
+    prUrl: string,
+    round: number,
+  ): Promise<void> {
+    const { owner, repo, prNumber, host } = prInfo
+    const gh = this.githubClient!
+
     try {
       const store = await getMemoryStore()
       const engine = new ReviewEngine({
-        githubClient: this.githubClient,
+        githubClient: gh,
         memoryStore: store,
         memoryRetriever: new MemoryRetriever(store),
       })
 
       const result = await engine.reviewPR({
-        owner: parsed.owner,
-        repo: parsed.repo,
-        prNumber: parsed.prNumber,
-        host: parsed.host,
+        owner,
+        repo,
+        prNumber,
+        host,
         projectPath,
         imChatId: task.metadata?.imChatId as string | undefined,
         trigger: 'self-review',
       })
 
       log.info('Self-review completed', {
-        prNumber: parsed.prNumber,
+        prNumber,
         verdict: result.overallVerdict,
         comments: result.stats.totalComments,
+        round,
       })
 
+      // Notify IM on every review round
       if (result.stats.totalComments > 0 && task.metadata?.imChatId && this.imPlatform) {
         const { buildIMCardBody } = await import('../review/comment-builder.js')
         const cardBody = buildIMCardBody(result, prUrl)
         await this.imPlatform.sendCard(task.metadata.imChatId as string, {
           markdown: cardBody,
-          header: { title: '🔍 Self-Review Complete', color: 'blue' },
+          header: {
+            title: round === 0 ? '🔍 Self-Review Complete' : `🔧 Re-Review (round ${round})`,
+            color: 'blue',
+          },
         })
       }
+
+      // Decide whether to auto-fix
+      const fixableCount = result.stats.critical + result.stats.warnings
+      if (
+        result.overallVerdict !== 'request_changes' ||
+        fixableCount === 0 ||
+        round >= TaskRunner.MAX_FIX_ROUNDS
+      ) {
+        if (round >= TaskRunner.MAX_FIX_ROUNDS && fixableCount > 0) {
+          log.info('Max auto-fix rounds reached, stopping', { round, fixableCount })
+        }
+        return
+      }
+
+      // --- Auto-fix ---
+      log.info('Starting auto-fix', { prNumber, round: round + 1, fixableCount })
+
+      // Verify PR is still open before attempting fix
+      const currentPR = await gh.getPR(owner, repo, prNumber, host)
+      if (!currentPR || currentPR.state !== 'open') {
+        log.info('PR no longer open, skipping auto-fix', { prNumber, state: currentPR?.state })
+        return
+      }
+
+      const prBranch = result.prBranch || currentPR.head
+      if (!prBranch) {
+        log.warn('Cannot determine PR branch for auto-fix', { prNumber })
+        return
+      }
+
+      // Fetch PR discussion for fix context
+      const discussion = await gh.getPRConversation(owner, repo, prNumber, host)
+
+      const fixTaskId = `${task.id}-fix-${round + 1}`
+      const fixPrompt = buildReviewFixPrompt({
+        taskId: fixTaskId,
+        review: result,
+        round: round + 1,
+        discussion,
+      })
+
+      let sandbox: Sandbox | undefined
+      let mcpConfigPath: string | undefined
+
+      try {
+        sandbox = await this.sandboxManager.createSandboxOnBranch(fixTaskId, prBranch, projectPath)
+        mcpConfigPath = await this.createMCPConfig(sandbox.worktreePath)
+
+        // Create a minimal task record for the fix
+        const fixTask: Task = {
+          id: fixTaskId,
+          status: 'running',
+          prompt: fixPrompt,
+          output: '',
+          createdAt: new Date().toISOString(),
+          createdBy: 'self-review-fix',
+          metadata: { ...task.metadata, title: `Fix review feedback (round ${round + 1})` },
+        }
+        this.store.set(fixTask)
+
+        await this.executeAI(fixPrompt, mcpConfigPath, fixTask, sandbox, projectPath)
+
+        // Push the fixes (no PR creation — PR already exists)
+        await this.sandboxManager.finalizeSandbox(
+          sandbox,
+          `Fix review feedback (round ${round + 1})`,
+        )
+
+        this.store.update(fixTaskId, { status: 'completed' })
+        log.info('Auto-fix push complete', { prNumber, round: round + 1 })
+      } catch (fixErr) {
+        log.error('Auto-fix failed', {
+          prNumber,
+          round: round + 1,
+          error: fixErr instanceof Error ? fixErr.message : String(fixErr),
+        })
+        this.store.update(fixTaskId, {
+          status: 'failed',
+          error: fixErr instanceof Error ? fixErr.message : String(fixErr),
+        })
+        return
+      } finally {
+        if (sandbox) {
+          await this.sandboxManager.cleanupSandbox(sandbox).catch((e) =>
+            log.warn('Fix sandbox cleanup failed', {
+              error: e instanceof Error ? e.message : String(e),
+            }),
+          )
+        }
+        if (mcpConfigPath) {
+          await unlink(mcpConfigPath).catch(() => {
+            /* best effort */
+          })
+        }
+      }
+
+      // Recurse: re-review after fix
+      await this.selfReviewAndFix(task, prInfo, projectPath, prUrl, round + 1)
     } catch (err) {
       log.warn('Self-review failed', {
         prUrl,
+        round,
         error: err instanceof Error ? err.message : String(err),
       })
     }

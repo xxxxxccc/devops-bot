@@ -9,7 +9,11 @@ import { createLogger } from '../infra/logger.js'
 import { createProviderFromEnv } from '../providers/index.js'
 import type { AIProvider } from '../providers/types.js'
 import type { DiffChunk } from './diff-parser.js'
-import { buildReviewSystemPrompt, buildReviewUserPrompt } from './prompt.js'
+import {
+  type PRDiscussionContext,
+  buildReviewSystemPrompt,
+  buildReviewUserPrompt,
+} from './prompt.js'
 import type { LineComment, ReviewResult } from './types.js'
 
 const log = createLogger('review-ai')
@@ -35,6 +39,7 @@ export async function reviewWithAI(params: {
   skippedFiles: string[]
   totalFiles: number
   existingComments?: Array<{ path: string; line: number | null; body: string }>
+  discussion?: PRDiscussionContext
   projectRules?: string
   skillContent?: string
   reviewPatterns?: string
@@ -52,6 +57,7 @@ export async function reviewWithAI(params: {
     prBody: params.prBody,
     chunks: params.chunks,
     existingComments: params.existingComments,
+    discussion: params.discussion,
   })
 
   log.info('Calling review AI', {

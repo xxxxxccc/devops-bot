@@ -72,11 +72,17 @@ export function buildReviewSystemPrompt(params: {
   return sections.join('\n')
 }
 
+export interface PRDiscussionContext {
+  issueComments: Array<{ user: string; body: string; createdAt: string }>
+  reviewSummaries: Array<{ user: string; body: string; state: string; createdAt: string }>
+}
+
 export function buildReviewUserPrompt(params: {
   prTitle: string
   prBody: string
   chunks: DiffChunk[]
   existingComments?: Array<{ path: string; line: number | null; body: string }>
+  discussion?: PRDiscussionContext
 }): string {
   const parts: string[] = [`## Pull Request: ${params.prTitle}`]
 
@@ -86,8 +92,22 @@ export function buildReviewUserPrompt(params: {
     parts.push('', '### Description', '', body)
   }
 
+  if (params.discussion) {
+    const { issueComments, reviewSummaries } = params.discussion
+    const hasDiscussion = issueComments.length > 0 || reviewSummaries.length > 0
+    if (hasDiscussion) {
+      parts.push('', '### PR Discussion Context (consider these opinions)', '')
+      for (const r of reviewSummaries.slice(0, 10)) {
+        parts.push(`- [${r.user}] (review: ${r.state}) ${r.body.slice(0, 300)}`)
+      }
+      for (const c of issueComments.slice(0, 15)) {
+        parts.push(`- [${c.user}] ${c.body.slice(0, 300)}`)
+      }
+    }
+  }
+
   if (params.existingComments && params.existingComments.length > 0) {
-    parts.push('', '### Existing Review Comments (do NOT duplicate these)', '')
+    parts.push('', '### Existing Review Line Comments (do NOT duplicate these)', '')
     for (const c of params.existingComments.slice(0, 20)) {
       const loc = c.line ? `${c.path}:${c.line}` : c.path
       parts.push(`- [${loc}] ${c.body.slice(0, 200)}`)

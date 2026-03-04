@@ -31,6 +31,8 @@ export interface Sandbox {
   projectPath: string
   /** Submodule paths detected in the project (empty if none) */
   submodules: string[]
+  /** True when sandbox was created on an existing PR branch (skip PR creation on finalize). */
+  isExistingBranch?: boolean
 }
 
 export interface SandboxConfig {
@@ -126,6 +128,58 @@ export class SandboxManager {
   }
 
   /**
+   * Create a sandbox that checks out an existing remote branch (e.g. a PR branch).
+   *
+   * Unlike `createSandbox` (which creates a new branch), this fetches the remote
+   * branch and creates a worktree tracking it. `finalizeSandbox` will only push
+   * (no PR creation) when `isExistingBranch` is set.
+   */
+  async createSandboxOnBranch(
+    taskId: string,
+    existingBranch: string,
+    projectPath: string,
+  ): Promise<Sandbox> {
+    const git = simpleGit(projectPath)
+    const worktreePath = join(this.config.baseDir, taskId)
+
+    if (existsSync(worktreePath)) {
+      log.warn('Stale worktree found, cleaning up', { taskId, worktreePath })
+      await this.forceRemoveWorktree(git, worktreePath)
+    }
+
+    log.info('Creating sandbox on existing branch', { taskId, existingBranch, worktreePath })
+
+    await git.fetch(['origin', existingBranch])
+
+    // -B resets local branch to match remote; creates worktree in one step
+    await git.raw([
+      'worktree',
+      'add',
+      '-B',
+      existingBranch,
+      worktreePath,
+      `origin/${existingBranch}`,
+    ])
+
+    await this.installDependencies(projectPath, worktreePath)
+    const submodules = await this.initSubmodules(projectPath, worktreePath)
+
+    const sandbox: Sandbox = {
+      taskId,
+      branchName: existingBranch,
+      worktreePath,
+      baseBranch: existingBranch,
+      projectPath,
+      submodules,
+      isExistingBranch: true,
+    }
+    this.activeSandboxes.set(taskId, sandbox)
+
+    log.info('Sandbox created on existing branch', { taskId, existingBranch, worktreePath })
+    return sandbox
+  }
+
+  /**
    * Finalize a sandbox: push the branch and optionally create a PR/MR.
    *
    * For GitLab, push and MR creation happen in one step via push options
@@ -142,6 +196,20 @@ export class SandboxManager {
     const hasChanges = await this.branchHasNewCommits(sandbox)
     if (!hasChanges) {
       log.info('No commits in sandbox, skipping finalize', { taskId: sandbox.taskId })
+      return {}
+    }
+
+    // Existing branch (auto-fix): push only, PR already exists
+    if (sandbox.isExistingBranch) {
+      log.info('Existing branch sandbox — pushing without PR creation', {
+        taskId: sandbox.taskId,
+        branch: sandbox.branchName,
+      })
+      const { pushOnly } = await import('./pr-creator.js')
+      await pushOnly({
+        worktreePath: sandbox.worktreePath,
+        branchName: sandbox.branchName,
+      })
       return {}
     }
 

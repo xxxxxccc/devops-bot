@@ -152,7 +152,7 @@ AI-powered code review that provides both high-level summary and line-level comm
 
 | Trigger | How it works | IM Notification |
 |---------|-------------|-----------------|
-| **Self-review** | Automatically reviews bot-created PRs after task completion (`ENABLE_SELF_REVIEW=true`) | Yes (originating chat) |
+| **Self-review** | Automatically reviews bot-created PRs after task completion (`ENABLE_SELF_REVIEW=true`). If critical/warning issues are found, triggers an **auto-fix loop** (up to 2 rounds) that pushes fixes to the same PR branch and re-reviews. | Yes (originating chat) |
 | **IM command** | User sends "review PR #123" in chat → `review_pr` intent | Yes (originating chat) |
 | **Polling** | Background poller scans registered projects for open PRs (`REVIEW_TRIGGER_MODE=poll`) | No (GitHub PR comment only) |
 | **Webhook** | GitHub webhook on PR open/update (`REVIEW_TRIGGER_MODE=webhook`) | No (GitHub PR comment only) |
@@ -166,6 +166,22 @@ Review memories are stored in a separate `review` namespace to avoid polluting t
 
 When `ENABLE_REVIEW_CROSS_INJECT=true`, `review_pattern` memories are selectively injected into task dispatcher context, creating a feedback loop where common review findings improve future code generation.
 
+### Auto-Fix Loop (Self-Review Only)
+
+When self-review detects critical or warning issues, it automatically attempts to fix them:
+
+1. **Review** — ReviewEngine analyzes the PR, posts GitHub review comments
+2. **Fix** — Creates a sandbox on the existing PR branch, AI fixes critical/warning issues, pushes to the same branch
+3. **Re-review** — Reviews the fixed PR again; if issues remain, repeats step 2
+4. **Max 2 rounds** — Hard limit prevents infinite loops; after 2 fix rounds, stops regardless of remaining issues
+
+Safety measures:
+- Verifies PR is still open before each fix attempt (skips if merged/closed)
+- Fetches full PR discussion context (issue comments + review summaries) as additional fix context
+- Only triggers for self-review (bot-created PRs); external reviews only post comments
+
+Controlled by `ENABLE_SELF_REVIEW=true` — no additional configuration needed.
+
 ## Features
 
 - **Multi-provider AI**: Anthropic (Claude), OpenAI, or any OpenAI-compatible API (DeepSeek, Groq, Together, etc.)
@@ -177,7 +193,7 @@ When `ENABLE_REVIEW_CROSS_INJECT=true`, `review_pattern` memories are selectivel
 - **Multi-Project**: Manage multiple git repositories from a single chat group
 - **GitHub App Auth**: Secure authentication via GitHub App (replaces PAT)
 - **Three-Tier Tasks**: AI-driven risk assessment routes tasks through execute/propose/issue tiers
-- **PR Review**: AI code review with self-review, IM command, polling, and webhook triggers
+- **PR Review**: AI code review with self-review (+ auto-fix loop), IM command, polling, and webhook triggers
 - **Jira Integration**: Auto-fetch issue details when Jira link detected
 - **Figma Integration**: Fetch design context from Figma links
 - **File Attachments**: Screenshots and files from IM messages are passed to Task AI
