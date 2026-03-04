@@ -361,6 +361,7 @@ export class GitHubClient {
       head: string
       base: string
       draft: boolean
+      labels: string[]
       created_at: string
     }>
   > {
@@ -383,6 +384,7 @@ export class GitHubClient {
         head: { ref: string }
         base: { ref: string }
         draft: boolean
+        labels: Array<{ name: string }>
         created_at: string
       }>
     >(`${apiBase}/repos/${owner}/${repo}/pulls?${params}`, token, 'listPRs')
@@ -397,6 +399,7 @@ export class GitHubClient {
       head: pr.head.ref,
       base: pr.base.ref,
       draft: pr.draft,
+      labels: (pr.labels ?? []).map((l) => l.name),
       created_at: pr.created_at,
     }))
   }
@@ -416,6 +419,7 @@ export class GitHubClient {
         html_url: string
         user: string
         head: string
+        headSHA: string
         base: string
         draft: boolean
         mergeable: boolean | null
@@ -438,7 +442,7 @@ export class GitHubClient {
       body: string | null
       html_url: string
       user: { login: string } | null
-      head: { ref: string }
+      head: { ref: string; sha: string }
       base: { ref: string }
       draft: boolean
       mergeable: boolean | null
@@ -458,6 +462,7 @@ export class GitHubClient {
       html_url: data.html_url,
       user: data.user?.login ?? 'unknown',
       head: data.head.ref,
+      headSHA: data.head.sha,
       base: data.base.ref,
       draft: data.draft,
       mergeable: data.mergeable,

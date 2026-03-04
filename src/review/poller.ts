@@ -17,7 +17,10 @@ import type { ReviewStore } from './store.js'
 
 const log = createLogger('review-poller')
 
-const REVIEW_AUTO_SCAN = process.env.REVIEW_AUTO_SCAN === 'true'
+const REVIEW_AUTO_SCAN = process.env.REVIEW_AUTO_SCAN !== 'false'
+const REVIEW_SCAN_LABELS = process.env.REVIEW_SCAN_LABELS
+  ? process.env.REVIEW_SCAN_LABELS.split(',').map((l) => l.trim().toLowerCase())
+  : []
 
 export interface ReviewPollerDeps {
   reviewEngine: ReviewEngine
@@ -115,22 +118,19 @@ export class ReviewPoller {
       try {
         if (!this.shouldReview(pr)) continue
 
-        // Get detailed PR info to check head SHA
+        // Get detailed PR info including head commit SHA for deduplication
         const detailed = await gh.getPR(owner, repo, pr.number, host)
         if (!detailed) continue
 
-        // The head ref from listPRs is the branch name; we need the actual commit SHA
-        // getPR doesn't return head SHA directly, so we use the updated_at as a proxy
-        // for detecting new commits. A better approach: use getPRFiles or the head sha.
-        // For now, use the PR's updated_at as a change indicator.
-        const headIndicator = detailed.updated_at
-
-        if (this.deps.reviewStore.isReviewed(owner, repo, pr.number, headIndicator)) {
+        const headSHA = detailed.headSHA
+        if (this.deps.reviewStore.isReviewed(owner, repo, pr.number, headSHA)) {
+          log.debug(`PR #${pr.number} already reviewed at ${headSHA.slice(0, 8)}, skipping`)
           continue
         }
 
         log.info(`Reviewing PR #${pr.number} in ${owner}/${repo}`, {
           title: pr.title,
+          headSHA: headSHA.slice(0, 8),
           trigger: 'poller',
         })
 
@@ -147,7 +147,7 @@ export class ReviewPoller {
           owner,
           repo,
           pr.number,
-          headIndicator,
+          headSHA,
           result.reviewId ?? null,
           'poller',
         )
@@ -159,16 +159,11 @@ export class ReviewPoller {
     }
   }
 
-  private shouldReview(pr: { draft: boolean; title: string }): boolean {
+  private shouldReview(pr: { draft: boolean; labels: string[] }): boolean {
     if (pr.draft) return false
     if (REVIEW_AUTO_SCAN) return true
-
-    // Label-based filtering would require fetching PR labels.
-    // For now, use title-based heuristic or always review non-draft PRs
-    // when REVIEW_AUTO_SCAN is false and labels aren't in the listPRs response.
-    // The listPRs response doesn't include labels, so we rely on REVIEW_AUTO_SCAN
-    // or the user adding labels via the GitHub webhook path.
-    return REVIEW_AUTO_SCAN
+    if (REVIEW_SCAN_LABELS.length === 0) return false
+    return pr.labels.some((l) => REVIEW_SCAN_LABELS.includes(l.toLowerCase()))
   }
 }
 
