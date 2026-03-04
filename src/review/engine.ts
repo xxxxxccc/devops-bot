@@ -132,13 +132,20 @@ export class ReviewEngine {
       const summaryBody = buildSummaryBody(result)
       const ghComments = buildGitHubComments(result.lineComments)
 
+      // GitHub doesn't allow a PR author to APPROVE their own PR.
+      // For self-review, downgrade APPROVE to COMMENT to avoid 422.
+      let event = toGitHubEvent(result.overallVerdict)
+      if (request.trigger === 'self-review' && event === 'APPROVE') {
+        event = 'COMMENT'
+      }
+
       const review = await gh.createReview(
         owner,
         repo,
         prNumber,
         {
           body: summaryBody,
-          event: toGitHubEvent(result.overallVerdict),
+          event,
           comments: ghComments,
         },
         host,
