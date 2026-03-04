@@ -169,7 +169,7 @@ IM message (Feishu WebSocket / Slack Socket Mode)
        - fetches full PR discussion context
        - review result posted as GitHub PR review + IM notification to originating chat
 
-       Polling (REVIEW_TRIGGER_MODE=poll|both):
+       Polling (REVIEW_TRIGGER_MODE=polling|both):
        - review-poller scans registered projects for open PRs
        - deduplicates via reviewed_prs table
        - fetches full PR discussion context
@@ -231,6 +231,6 @@ Adapters translate between neutral types (`AIMessage`, `AIContentBlock`, `AITool
 | `APPROVAL_POLL_INTERVAL_MS` | No | Approval poll interval in ms (default: `1800000`) |
 | `OPENAI_API_KEY` | No | Embedding fallback when local embedding is unavailable |
 | `ENABLE_SELF_REVIEW` | No | Enable auto-review of bot-created PRs (default: `false`) |
-| `REVIEW_TRIGGER_MODE` | No | External PR review trigger: `poll` \| `webhook` \| `both` \| `off` (default: `off`) |
+| `REVIEW_TRIGGER_MODE` | No | External PR review trigger: `polling` \| `webhook` \| `both` \| `off` (default: `polling`) |
 | `REVIEW_POLL_INTERVAL_MS` | No | PR review poll interval in ms (default: `1800000`) |
 | `ENABLE_REVIEW_CROSS_INJECT` | No | Inject review_pattern memories into task context (default: `false`) |

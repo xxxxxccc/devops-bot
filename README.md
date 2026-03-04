@@ -154,7 +154,7 @@ AI-powered code review that provides both high-level summary and line-level comm
 |---------|-------------|-----------------|
 | **Self-review** | Automatically reviews bot-created PRs after task completion (`ENABLE_SELF_REVIEW=true`). If critical/warning issues are found, triggers an **auto-fix loop** (up to 2 rounds) that pushes fixes to the same PR branch and re-reviews. | Yes (originating chat) |
 | **IM command** | User sends "review PR #123" in chat → `review_pr` intent | Yes (originating chat) |
-| **Polling** | Background poller scans registered projects for open PRs (`REVIEW_TRIGGER_MODE=poll`) | No (GitHub PR comment only) |
+| **Polling** | Background poller scans registered projects for open PRs (`REVIEW_TRIGGER_MODE=polling`, default) | No (GitHub PR comment only) |
 | **Webhook** | GitHub webhook on PR open/update (`REVIEW_TRIGGER_MODE=webhook`) | No (GitHub PR comment only) |
 
 ### Memory Isolation
