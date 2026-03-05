@@ -33,7 +33,7 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 - Two AI layers: **fast model** (dispatcher) and **powerful model** (task executor) — provider-agnostic
 - **Three-tier task execution**: `execute_task` (low risk, immediate), `propose_task` (medium risk, needs approval via Issue AI synthesis), `create_issue` (high risk, discussion only)
 - **PR Review**: AI-powered code review via `review_pr` intent, self-review after task completion (with auto-fix loop — up to 2 rounds), or polling/webhook triggers; Memory namespace isolation (`task` vs `review`) with selective cross-injection; full PR discussion context (issue comments + review summaries) injected into review and fix prompts
-- **Issue AI**: Independent AI layer that reads full issue context (body + comments) and synthesizes actionable tasks; also scans external issues with configured labels
+- **Issue AI**: Independent AI layer that reads full issue context (body + comments) and synthesizes actionable tasks; also scans external issues with configured labels; in workspace mode, uses **two-phase cross-repo triage** (quality gate + routing to sub-projects, with sub-issue creation)
 - **GitHub App authentication** for GitHub operations (PRs, Issues, git push); PAT fallback supported
 - Skills stored at **workspace level** (`~/.devops-bot/skills/`), shared across all projects
 - Memory persists in `data/memory/` using **SQLite** (primary) + **JSONL** exports (AI browsing)
@@ -56,6 +56,6 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 - GitHub App auth: `src/github/app-auth.ts`, `src/github/client.ts`
 - Multi-project: `src/project/registry.ts`, `src/project/repo-manager.ts`, `src/project/resolver.ts`
 - Workspace mode: `src/project/workspace.ts` (registry, manifest parser, context loader)
-- Issue AI & Approval: `src/approval/issue-ai.ts`, `src/approval/poller.ts`, `src/approval/store.ts`
+- Issue AI & Approval: `src/approval/issue-ai.ts` (`triageIssue`, `synthesizeTaskForTarget`), `src/approval/poller.ts`, `src/approval/store.ts`
 - PR Review: `src/review/engine.ts`, `src/review/ai-client.ts`, `src/review/diff-parser.ts`, `src/review/poller.ts`
 - Auto-fix loop: `src/webhook/task-runner.ts` (`selfReviewAndFix`), `src/webhook/prompt.ts` (`buildReviewFixPrompt`), `src/sandbox/manager.ts` (`createSandboxOnBranch`)

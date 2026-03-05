@@ -148,7 +148,7 @@ export class ApprovalStore {
     repoKey: string,
     issueNumber: number,
     taskId: string | null,
-    source: 'bot' | 'external',
+    source: 'bot' | 'external' | 'workspace',
   ): void {
     this.db
       .prepare(

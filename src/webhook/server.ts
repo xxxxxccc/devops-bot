@@ -164,6 +164,13 @@ export class WebhookServer {
               return null
             }
           },
+          getProjectResolver: async () => {
+            try {
+              return await this.getProjectResolver()
+            } catch {
+              return null
+            }
+          },
           createTask: (data) => this.createTaskFromIM(data),
         },
         intervalMs,

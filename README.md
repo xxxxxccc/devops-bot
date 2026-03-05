@@ -127,6 +127,33 @@ Creates an Issue and waits for approval before executing. A background poller ch
 
 The poller also scans all registered projects for open issues labeled `devops-bot` (configurable via `ISSUE_SCAN_LABELS`). Any issue with an approval reaction is processed by the Issue AI the same way. This means users can create issues directly on GitHub/GitLab, label them, and approve them -- no chat interaction required. The bot posts a comment on the issue when execution starts or when it determines the issue is not feasible for automated execution.
 
+### Cross-Repo Triage (Workspace Mode)
+
+When workspace context is available, the Issue AI uses a **two-phase cross-repo triage** flow instead of the default single-phase synthesis:
+
+**Phase 1 — Triage**: Quality gate + cross-repo routing
+- Assesses if the issue is suitable for automated execution (verdict: `actionable` / `needs_info` / `reject`)
+- Rejects issues with fabricated or hallucinated analysis (common in bot-generated issues)
+- Determines which project(s) in the workspace should handle the issue
+- Uses workspace context (project list + workspace `CLAUDE.md`)
+
+**Phase 2 — Synthesis**: Per-repo task content generation
+- Generates a targeted task description for each identified project
+- When the target repo differs from the filing repo, creates a sub-issue in the target repo with a backlink to the original
+
+Three issue discovery paths feed into this flow:
+
+| Path | Source | Description |
+|------|--------|-------------|
+| **A** | Bot-created issues | `pending_approvals` table — issues created via `propose_task` |
+| **B** | External issues | Project repos scanned for `ISSUE_SCAN_LABELS` label |
+| **C** | Workspace issues | Workspace repo scanned; distributed to sub-projects via triage |
+
+Key behaviors:
+- Without workspace context, the legacy single-phase Issue AI behavior is unchanged
+- Sub-issues created during triage are auto-approved (the original issue's approval covers all targets)
+- The workspace repo itself is never a task target — issues filed there are always distributed to sub-projects
+
 ### Tier 3: `create_issue` (High Risk / Unclear)
 
 Creates an Issue for discussion only — no automatic execution. Used for:
@@ -541,9 +568,9 @@ devops-bot/
 │   │   ├── pr-creator.ts     # Auto PR/MR creation (GitHub/GitLab)
 │   │   └── issue-creator.ts  # Auto Issue creation (GitHub/GitLab)
 │   ├── approval/
-│   │   ├── store.ts          # SQLite-backed pending approval + processed issue storage
-│   │   ├── poller.ts         # Polling loop: check reactions, scan repos, route to Issue AI
-│   │   └── issue-ai.ts       # Lightweight AI: synthesize actionable task from issue context
+│   │   ├── store.ts          # SQLite-backed pending approval + processed issue storage (incl. workspace source)
+│   │   ├── poller.ts         # Polling loop: check reactions, scan repos, workspace triage, sub-issue creation
+│   │   └── issue-ai.ts       # Issue AI: triage (quality gate + cross-repo routing) + task synthesis
 │   ├── review/
 │   │   ├── engine.ts         # PR review orchestrator
 │   │   ├── ai-client.ts      # Review AI calls (TASK_MODEL)
@@ -559,7 +586,7 @@ devops-bot/
 │   ├── project/
 │   │   ├── registry.ts       # SQLite-backed project registry
 │   │   ├── repo-manager.ts   # Git clone/sync manager
-│   │   ├── resolver.ts       # Project resolution orchestrator
+│   │   ├── resolver.ts       # Project resolution orchestrator (+ workspace info helpers)
 │   │   └── workspace.ts      # Workspace registry, manifest parser, context loader
 │   ├── mcp/
 │   │   └── server.ts         # MCP server for AI tools

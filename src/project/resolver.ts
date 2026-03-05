@@ -377,6 +377,29 @@ export class ProjectResolver {
     return this.workspaceRegistry.removeForChat(chatId, workspaceId)
   }
 
+  /** Get workspace info by ID (for poller use — no chat context needed). */
+  getWorkspaceInfo(workspaceId: string): WorkspaceInfo | undefined {
+    const ws = this.workspaceRegistry.getById(workspaceId)
+    if (!ws) return undefined
+    const manifest = parseWorkspaceManifest(ws.localPath)
+    if (!manifest) return undefined
+    const context = loadWorkspaceContext(ws.localPath)
+    return { record: ws, manifest, context }
+  }
+
+  /** List all registered workspaces with parsed manifests and context. */
+  getAllWorkspaceInfos(): WorkspaceInfo[] {
+    const workspaces = this.workspaceRegistry.listAll()
+    const results: WorkspaceInfo[] = []
+    for (const ws of workspaces) {
+      const manifest = parseWorkspaceManifest(ws.localPath)
+      if (!manifest) continue
+      const context = loadWorkspaceContext(ws.localPath)
+      results.push({ record: ws, manifest, context })
+    }
+    return results
+  }
+
   /** Find which workspace (if any) owns a given git URL for the current chat. */
   private findWorkspaceForGitUrl(gitUrl: string, chatId: string): string | null {
     const workspaces = this.workspaceRegistry.getForChat(chatId)

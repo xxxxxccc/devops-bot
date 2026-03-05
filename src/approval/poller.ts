@@ -2,14 +2,16 @@
  * Approval Poller — periodically checks issues for approval reactions and
  * uses the Issue AI to synthesize actionable tasks.
  *
- * Two discovery paths:
+ * Three discovery paths:
  *   A. Bot-created issues (pending_approvals table) — check reactions on known issues
  *   B. External issues (repo scan) — list open issues with configured labels, check reactions
+ *   C. Workspace issues — scan issues on workspace repos, triage + distribute to sub-projects
  *
  * When an approval reaction is found:
  *   1. Fetch full issue context (body + comments)
- *   2. Run Issue AI to synthesize a structured task
- *   3. If feasible → create task; if not → post comment explaining why
+ *   2. If workspace context available → two-phase triage (quality gate + repo routing)
+ *   3. Otherwise → single-phase synthesis (legacy)
+ *   4. Create task(s); cross-repo issues create sub-issues in target repos
  *
  * Robustness:
  *   - Handles deleted issues (404/410) → marks expired
@@ -22,8 +24,15 @@ import { createLogger } from '../infra/logger.js'
 import type { ApprovalStore, PendingApproval } from './store.js'
 import type { GitHubClient } from '../github/client.js'
 import type { IMPlatform } from '../channels/types.js'
-import { type IssueContext, synthesizeTask } from './issue-ai.js'
+import {
+  type IssueContext,
+  type WorkspaceContext,
+  synthesizeTask,
+  triageIssue,
+  synthesizeTaskForTarget,
+} from './issue-ai.js'
 import type { ProjectRegistry, ProjectRecord } from '../project/registry.js'
+import type { ProjectResolver } from '../project/resolver.js'
 
 const log = createLogger('approval-poller')
 
@@ -37,6 +46,7 @@ export interface ApprovalPollerDeps {
   githubClient: GitHubClient
   imPlatform: IMPlatform | null
   getProjectRegistry: () => Promise<ProjectRegistry | null>
+  getProjectResolver: () => Promise<ProjectResolver | null>
   createTask: (data: {
     title: string
     description: string
@@ -90,6 +100,9 @@ export class ApprovalPoller {
 
     // Path B: external issues from repo scanning
     await this.scanRepoIssues()
+
+    // Path C: workspace issues (scan workspace repos and distribute to sub-projects)
+    await this.scanWorkspaceIssues()
 
     log.info('Poll cycle completed')
   }
@@ -454,15 +467,46 @@ export class ApprovalPoller {
   }
 
   /* ================================================================== */
-  /*  Issue AI processing (shared by both paths)                         */
+  /*  Issue AI processing (shared by all paths)                          */
   /* ================================================================== */
 
   private async processIssueWithAI(
     ctx: IssueContext,
     meta: {
-      projectPath: string
+      projectPath?: string
       createdBy: string
-      source: 'bot' | 'external'
+      source: 'bot' | 'external' | 'workspace'
+      imChatId?: string | null
+      imMessageId?: string | null
+      platform: 'github' | 'gitlab'
+      host: string
+      workspaceContext?: WorkspaceContext
+    },
+  ): Promise<void> {
+    const repoKey = `${ctx.repoOwner}/${ctx.repoName}`
+
+    if (this.deps.approvalStore.isIssueProcessed(repoKey, ctx.issueNumber)) return
+
+    // Load workspace context if not already provided (for project issues)
+    let wsContext = meta.workspaceContext
+    if (!wsContext) {
+      wsContext = await this.loadWorkspaceContextForProject(ctx.repoOwner, ctx.repoName)
+    }
+
+    if (wsContext) {
+      await this.processWithTriage(ctx, meta, wsContext)
+    } else {
+      await this.processLegacy(ctx, meta)
+    }
+  }
+
+  /** Legacy single-phase processing (no workspace context). */
+  private async processLegacy(
+    ctx: IssueContext,
+    meta: {
+      projectPath?: string
+      createdBy: string
+      source: 'bot' | 'external' | 'workspace'
       imChatId?: string | null
       imMessageId?: string | null
       platform: 'github' | 'gitlab'
@@ -470,10 +514,6 @@ export class ApprovalPoller {
     },
   ): Promise<void> {
     const repoKey = `${ctx.repoOwner}/${ctx.repoName}`
-
-    // Double-check not already processed
-    if (this.deps.approvalStore.isIssueProcessed(repoKey, ctx.issueNumber)) return
-
     const synthesized = await synthesizeTask(ctx)
 
     if (!synthesized.feasible) {
@@ -532,21 +572,353 @@ export class ApprovalPoller {
         `**DevOps Bot:** Task execution started.\n\n**Task:** ${synthesized.title}`,
       )
 
-      // IM notification for bot-created issues
-      if (meta.source === 'bot' && meta.imChatId && this.deps.imPlatform) {
-        await this.deps.imPlatform
-          .sendText(
-            meta.imChatId,
-            `Approved! Task execution started for: ${synthesized.title}\n${ctx.issueUrl}`,
-            meta.imMessageId ? { replyTo: meta.imMessageId } : undefined,
-          )
-          .catch((err) => log.warn('Failed to send IM notification', { error: String(err) }))
-      }
+      this.notifyIM(meta, synthesized.title, ctx.issueUrl)
     } catch (err) {
       log.error('Failed to create task from issue', {
         issueNumber: ctx.issueNumber,
         error: err instanceof Error ? err.message : String(err),
       })
+    }
+  }
+
+  /** Two-phase processing with triage (quality gate + cross-repo routing). */
+  private async processWithTriage(
+    ctx: IssueContext,
+    meta: {
+      projectPath?: string
+      createdBy: string
+      source: 'bot' | 'external' | 'workspace'
+      imChatId?: string | null
+      imMessageId?: string | null
+      platform: 'github' | 'gitlab'
+      host: string
+    },
+    wsContext: WorkspaceContext,
+  ): Promise<void> {
+    const repoKey = `${ctx.repoOwner}/${ctx.repoName}`
+
+    const triage = await triageIssue(ctx, wsContext)
+
+    if (triage.verdict === 'reject') {
+      log.info('Triage rejected issue', {
+        issueNumber: ctx.issueNumber,
+        reason: triage.verdictReason.slice(0, 200),
+      })
+      await this.postIssueComment(
+        meta.platform,
+        ctx.repoOwner,
+        ctx.repoName,
+        ctx.issueNumber,
+        meta.host,
+        `**DevOps Bot — Triage:** This issue is not suitable for automated execution.\n\n${triage.verdictReason}`,
+      )
+      this.deps.approvalStore.markIssueProcessed(repoKey, ctx.issueNumber, null, meta.source)
+      return
+    }
+
+    if (triage.verdict === 'needs_info') {
+      log.info('Triage needs more info', {
+        issueNumber: ctx.issueNumber,
+        reason: triage.verdictReason.slice(0, 200),
+      })
+      await this.postIssueComment(
+        meta.platform,
+        ctx.repoOwner,
+        ctx.repoName,
+        ctx.issueNumber,
+        meta.host,
+        `**DevOps Bot — Triage:** More information is needed before this issue can be processed.\n\n${triage.verdictReason}`,
+      )
+      this.deps.approvalStore.markIssueProcessed(repoKey, ctx.issueNumber, null, meta.source)
+      return
+    }
+
+    if (triage.targets.length === 0) {
+      log.warn('Triage returned actionable but no targets', {
+        issueNumber: ctx.issueNumber,
+      })
+      // Fall back to legacy if we have a project path
+      if (meta.projectPath) {
+        await this.processLegacy(ctx, meta)
+      } else {
+        await this.postIssueComment(
+          meta.platform,
+          ctx.repoOwner,
+          ctx.repoName,
+          ctx.issueNumber,
+          meta.host,
+          '**DevOps Bot — Triage:** Could not determine which project should handle this issue.',
+        )
+        this.deps.approvalStore.markIssueProcessed(repoKey, ctx.issueNumber, null, meta.source)
+      }
+      return
+    }
+
+    const resolver = await this.deps.getProjectResolver()
+    const summaryParts: string[] = []
+    const taskIds: string[] = []
+
+    for (const target of triage.targets) {
+      const synthesized = await synthesizeTaskForTarget(ctx, target, wsContext)
+
+      if (!synthesized.feasible) {
+        log.info('Target synthesis not feasible', {
+          issueNumber: ctx.issueNumber,
+          targetProject: target.projectId,
+          reason: synthesized.reason,
+        })
+        summaryParts.push(
+          `- **${target.projectId}**: Not feasible — ${synthesized.reason || 'insufficient context'}`,
+        )
+        continue
+      }
+
+      const targetRepoInfo = parseGitUrl(target.gitUrl)
+      const isSameRepo =
+        targetRepoInfo &&
+        targetRepoInfo.owner === ctx.repoOwner &&
+        targetRepoInfo.repo === ctx.repoName
+      const isFromWorkspace = meta.source === 'workspace'
+
+      let subIssueUrl: string | undefined
+      if ((!isSameRepo || isFromWorkspace) && targetRepoInfo && meta.platform === 'github') {
+        const subIssue = await this.deps.githubClient.createIssue(
+          targetRepoInfo.owner,
+          targetRepoInfo.repo,
+          {
+            title: synthesized.title,
+            body: `${synthesized.description}\n\n---\n*Parent issue: ${ctx.issueUrl}*`,
+            labels: [ISSUE_SCAN_LABELS],
+          },
+          targetRepoInfo.host,
+        )
+        if (subIssue) {
+          subIssueUrl = subIssue.url
+          log.info('Sub-issue created in target repo', {
+            targetRepo: `${targetRepoInfo.owner}/${targetRepoInfo.repo}`,
+            subIssueNumber: subIssue.number,
+          })
+        }
+      }
+
+      let projectPath = meta.projectPath
+      if (resolver && (!isSameRepo || isFromWorkspace)) {
+        const resolved = await resolver.resolveFromWorkspace(target.gitUrl, '')
+        if (resolved) projectPath = resolved
+      }
+
+      if (!projectPath) {
+        log.error('Cannot resolve project path for target', {
+          targetProject: target.projectId,
+        })
+        summaryParts.push(`- **${target.projectId}**: Failed to resolve project path`)
+        continue
+      }
+
+      try {
+        const taskId = await this.deps.createTask({
+          title: synthesized.title,
+          description: synthesized.description,
+          createdBy: meta.createdBy,
+          projectPath,
+          metadata: {
+            issueUrl: subIssueUrl || ctx.issueUrl,
+            issueNumber: ctx.issueNumber,
+            issueSource: meta.source,
+            issueRepoOwner: ctx.repoOwner,
+            issueRepoName: ctx.repoName,
+            issuePlatform: meta.platform,
+            issueHost: meta.host,
+            targetProjectId: target.projectId,
+            targetGitUrl: target.gitUrl,
+            subIssueUrl,
+            imChatId: meta.imChatId ?? undefined,
+            imMessageId: meta.imMessageId ?? undefined,
+            language: triage.language ?? synthesized.language,
+          },
+        })
+
+        taskIds.push(taskId)
+        log.info('Task created for triage target', {
+          taskId,
+          targetProject: target.projectId,
+          issueUrl: ctx.issueUrl,
+        })
+
+        if (subIssueUrl) {
+          summaryParts.push(`- **${target.projectId}**: ${synthesized.title} → ${subIssueUrl}`)
+        } else {
+          summaryParts.push(`- **${target.projectId}**: ${synthesized.title}`)
+        }
+      } catch (err) {
+        log.error('Failed to create task for triage target', {
+          targetProject: target.projectId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        summaryParts.push(`- **${target.projectId}**: Task creation failed`)
+      }
+    }
+
+    this.deps.approvalStore.markIssueProcessed(
+      repoKey,
+      ctx.issueNumber,
+      taskIds[0] ?? null,
+      meta.source,
+    )
+
+    if (summaryParts.length > 0) {
+      const header =
+        triage.targets.length === 1 && summaryParts.length === 1
+          ? '**DevOps Bot — Triage:** Task execution started.\n\n'
+          : `**DevOps Bot — Triage:** Split into ${triage.targets.length} target(s).\n\n`
+      await this.postIssueComment(
+        meta.platform,
+        ctx.repoOwner,
+        ctx.repoName,
+        ctx.issueNumber,
+        meta.host,
+        header + summaryParts.join('\n'),
+      )
+    }
+
+    this.notifyIM(meta, triage.targets.map((t) => t.projectId).join(', '), ctx.issueUrl)
+  }
+
+  /** Try to load workspace context for a project based on its workspaceId. */
+  private async loadWorkspaceContextForProject(
+    repoOwner: string,
+    repoName: string,
+  ): Promise<WorkspaceContext | undefined> {
+    try {
+      const resolver = await this.deps.getProjectResolver()
+      if (!resolver) return undefined
+
+      const registry = resolver.getRegistry()
+      const allProjects = registry.listAll()
+      const project = allProjects.find((p) => p.gitUrl.includes(`${repoOwner}/${repoName}`))
+
+      if (!project?.workspaceId) return undefined
+
+      const wsInfo = resolver.getWorkspaceInfo(project.workspaceId)
+      if (!wsInfo) return undefined
+
+      return {
+        projects: wsInfo.manifest.projects.map((p) => ({
+          id: p.id,
+          gitUrl: p.gitUrl,
+          lang: p.lang,
+          description: p.description,
+        })),
+        architectureDoc: wsInfo.context,
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Send IM notification for bot-created issues. */
+  private notifyIM(
+    meta: {
+      source: string
+      imChatId?: string | null
+      imMessageId?: string | null
+    },
+    title: string,
+    issueUrl: string,
+  ): void {
+    if (meta.source === 'bot' && meta.imChatId && this.deps.imPlatform) {
+      this.deps.imPlatform
+        .sendText(
+          meta.imChatId,
+          `Approved! Task execution started for: ${title}\n${issueUrl}`,
+          meta.imMessageId ? { replyTo: meta.imMessageId } : undefined,
+        )
+        .catch((err) => log.warn('Failed to send IM notification', { error: String(err) }))
+    }
+  }
+
+  /* ================================================================== */
+  /*  Path C: Workspace issues (scan workspace repos)                    */
+  /* ================================================================== */
+
+  private async scanWorkspaceIssues(): Promise<void> {
+    const resolver = await this.deps.getProjectResolver()
+    if (!resolver) return
+
+    const workspaces = resolver.getAllWorkspaceInfos()
+    if (workspaces.length === 0) return
+
+    for (const wsInfo of workspaces) {
+      try {
+        await this.scanWorkspaceRepoIssues(wsInfo)
+      } catch (err) {
+        log.error('Error scanning workspace issues', {
+          workspaceId: wsInfo.record.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+  }
+
+  private async scanWorkspaceRepoIssues(
+    wsInfo: import('../project/resolver.js').WorkspaceInfo,
+  ): Promise<void> {
+    const repoInfo = parseGitUrl(wsInfo.record.gitUrl)
+    if (!repoInfo || repoInfo.platform !== 'github') return
+
+    const { owner, repo, host } = repoInfo
+    const { githubClient, approvalStore } = this.deps
+    const repoKey = `${owner}/${repo}`
+
+    const issues = await githubClient.listOpenIssuesWithLabel(owner, repo, ISSUE_SCAN_LABELS, host)
+    if (issues.length === 0) return
+
+    const wsContext: WorkspaceContext = {
+      projects: wsInfo.manifest.projects.map((p) => ({
+        id: p.id,
+        gitUrl: p.gitUrl,
+        lang: p.lang,
+        description: p.description,
+      })),
+      architectureDoc: wsInfo.context,
+    }
+
+    for (const issue of issues) {
+      if (approvalStore.isIssueProcessed(repoKey, issue.number)) continue
+
+      const reactions = await githubClient.listIssueReactions(owner, repo, issue.number, host)
+      const hasApproval = reactions.some((r) => APPROVAL_REACTIONS.has(r.content))
+      if (!hasApproval) continue
+
+      log.info('Approved workspace issue found', {
+        workspace: wsInfo.record.id,
+        repo: repoKey,
+        issueNumber: issue.number,
+      })
+
+      const issueData = await githubClient.getIssueWithComments(owner, repo, issue.number, host)
+      if (!issueData || ('notFound' in issueData && issueData.notFound)) continue
+      if (!isOpenState(issueData.state)) continue
+
+      await this.processIssueWithAI(
+        {
+          title: issue.title,
+          body: issueData.body,
+          labels: issue.labels,
+          comments: issueData.comments,
+          repoOwner: owner,
+          repoName: repo,
+          issueNumber: issue.number,
+          issueUrl: issue.html_url,
+        },
+        {
+          createdBy: 'workspace-issue',
+          source: 'workspace' as const,
+          platform: 'github',
+          host,
+          workspaceContext: wsContext,
+        },
+      )
     }
   }
 

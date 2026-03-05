@@ -65,9 +65,9 @@ src/
 │   ├── pr-creator.ts          # Auto PR/MR creation (GitHub/GitLab)
 │   └── issue-creator.ts       # Auto Issue creation (GitHub/GitLab)
 ├── approval/
-│   ├── store.ts               # SQLite-backed pending approval + processed issue storage
-│   ├── poller.ts              # Polling loop: check reactions, scan repos, route to Issue AI
-│   └── issue-ai.ts            # Lightweight AI: synthesize actionable task from issue context
+│   ├── store.ts               # SQLite-backed pending approval + processed issue storage (incl. workspace source)
+│   ├── poller.ts              # Polling loop: check reactions, scan repos, workspace triage, sub-issue creation
+│   └── issue-ai.ts            # Issue AI: triageIssue (quality gate + cross-repo routing) + synthesizeTaskForTarget
 ├── review/
 │   ├── engine.ts              # PR review orchestrator (fetch diff → AI review → submit)
 │   ├── ai-client.ts           # Review AI calls, reuses TASK_MODEL
@@ -83,7 +83,7 @@ src/
 ├── project/
 │   ├── registry.ts            # SQLite-backed project registry (+ workspace_id FK)
 │   ├── repo-manager.ts        # Git clone/sync manager
-│   ├── resolver.ts            # Project resolution orchestrator (+ workspace methods)
+│   ├── resolver.ts            # Project resolution orchestrator (+ getWorkspaceInfo, getAllWorkspaceInfos)
 │   └── workspace.ts           # Workspace registry, manifest parser, context loader
 ├── memory/
 │   ├── store.ts               # SQLite-backed memory + JSONL export
@@ -133,7 +133,7 @@ IM message (Feishu WebSocket / Slack Socket Mode)
        - reads pending_approvals table
        - checks issue reactions (+1, heart, hooray) — 1 API call per issue
        - on approval: fetches full issue body + comments
-       - passes context to Issue AI for task synthesis
+       - passes context to Issue AI for task synthesis (or triage, if workspace)
        - Issue AI may deem the task infeasible -> posts comment explaining why
        - if feasible: creates task + posts "task started" comment
        - sends IM notification in original chat thread
@@ -145,7 +145,23 @@ IM message (Feishu WebSocket / Slack Socket Mode)
        - approved issues follow the same Issue AI pipeline as Path A
        - since no IM context exists, notifications are posted as issue comments
 
+       Path C — workspace issues (workspace mode only):
+       - scans workspace repos for open issues with ISSUE_SCAN_LABELS label
+       - filters out already-processed issues
+       - checks reactions; approved issues enter two-phase triage:
+         Phase 1 (triageIssue): quality gate + cross-repo routing
+           - verdict: actionable / needs_info / reject
+           - rejects fabricated/hallucinated analysis
+           - identifies target project(s) from workspace manifest
+         Phase 2 (synthesizeTaskForTarget): per-repo task generation
+           - generates targeted task description for each identified project
+           - if target repo ≠ filing repo: creates sub-issue in target repo with backlink
+           - sub-issues are auto-approved (original approval covers all targets)
+       - workspace repo is never a task target itself
+
        Common:
+       - without workspace context, legacy single-phase synthesis is used (Paths A & B)
+       - with workspace context, two-phase triage is used for all paths
        - expires stale pending approvals after 7 days
        - prevents double-trigger via processed_issues tracking
 
