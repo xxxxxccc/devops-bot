@@ -337,7 +337,7 @@ export class ApprovalPoller {
     if (issues.length === 0) return
 
     for (const issue of issues) {
-      if (approvalStore.isIssueProcessed(repoKey, issue.number)) continue
+      if (approvalStore.isIssueProcessed(repoKey, issue.number, issue.updated_at)) continue
 
       const reactions = await githubClient.listIssueReactions(owner, repo, issue.number, host)
       const hasApproval = reactions.some((r) => APPROVAL_REACTIONS.has(r.content))
@@ -377,6 +377,7 @@ export class ApprovalPoller {
           source: 'external' as const,
           platform: 'github',
           host,
+          issueUpdatedAt: issue.updated_at,
         },
       )
     }
@@ -481,11 +482,13 @@ export class ApprovalPoller {
       platform: 'github' | 'gitlab'
       host: string
       workspaceContext?: WorkspaceContext
+      issueUpdatedAt?: string
     },
   ): Promise<void> {
     const repoKey = `${ctx.repoOwner}/${ctx.repoName}`
 
-    if (this.deps.approvalStore.isIssueProcessed(repoKey, ctx.issueNumber)) return
+    if (this.deps.approvalStore.isIssueProcessed(repoKey, ctx.issueNumber, meta.issueUpdatedAt))
+      return
 
     // Load workspace context if not already provided (for project issues)
     let wsContext = meta.workspaceContext
@@ -592,6 +595,7 @@ export class ApprovalPoller {
       imMessageId?: string | null
       platform: 'github' | 'gitlab'
       host: string
+      issueUpdatedAt?: string
     },
     wsContext: WorkspaceContext,
   ): Promise<void> {
@@ -621,7 +625,7 @@ export class ApprovalPoller {
         issueNumber: ctx.issueNumber,
         reason: triage.verdictReason.slice(0, 200),
       })
-      await this.postIssueComment(
+      const commentCreatedAt = await this.postIssueComment(
         meta.platform,
         ctx.repoOwner,
         ctx.repoName,
@@ -629,7 +633,8 @@ export class ApprovalPoller {
         meta.host,
         `**DevOps Bot — Triage:** More information is needed before this issue can be processed.\n\n${triage.verdictReason}`,
       )
-      this.deps.approvalStore.markIssueProcessed(repoKey, ctx.issueNumber, null, meta.source)
+      const watermark = commentCreatedAt || new Date().toISOString()
+      this.deps.approvalStore.markIssueNeedsInfo(repoKey, ctx.issueNumber, watermark, meta.source)
       return
     }
 
@@ -884,7 +889,7 @@ export class ApprovalPoller {
     }
 
     for (const issue of issues) {
-      if (approvalStore.isIssueProcessed(repoKey, issue.number)) continue
+      if (approvalStore.isIssueProcessed(repoKey, issue.number, issue.updated_at)) continue
 
       const reactions = await githubClient.listIssueReactions(owner, repo, issue.number, host)
       const hasApproval = reactions.some((r) => APPROVAL_REACTIONS.has(r.content))
@@ -917,6 +922,7 @@ export class ApprovalPoller {
           platform: 'github',
           host,
           workspaceContext: wsContext,
+          issueUpdatedAt: issue.updated_at,
         },
       )
     }
@@ -926,6 +932,7 @@ export class ApprovalPoller {
   /*  Comment posting (GitHub / GitLab)                                  */
   /* ================================================================== */
 
+  /** Posts a comment and returns the comment's created_at timestamp (GitHub only). */
   private async postIssueComment(
     platform: 'github' | 'gitlab',
     owner: string,
@@ -933,11 +940,12 @@ export class ApprovalPoller {
     issueNumber: number,
     host: string,
     body: string,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     try {
       if (platform === 'github') {
-        await this.deps.githubClient.createIssueComment(owner, repo, issueNumber, body, host)
-      } else if (platform === 'gitlab') {
+        return await this.deps.githubClient.createIssueComment(owner, repo, issueNumber, body, host)
+      }
+      if (platform === 'gitlab') {
         const token =
           process.env.GITLAB_TOKEN || process.env.GITLAB_PRIVATE_TOKEN || process.env.GL_TOKEN
         if (token) {
@@ -956,6 +964,7 @@ export class ApprovalPoller {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+    return undefined
   }
 
   /* ================================================================== */

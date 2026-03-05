@@ -220,7 +220,9 @@ export class GitHubClient {
     repo: string,
     label: string,
     host = 'github.com',
-  ): Promise<Array<{ number: number; title: string; labels: string[]; html_url: string }>> {
+  ): Promise<
+    Array<{ number: number; title: string; labels: string[]; html_url: string; updated_at: string }>
+  > {
     const token = await this.getToken(owner, repo)
     if (!token) return []
 
@@ -233,6 +235,7 @@ export class GitHubClient {
         title: string
         labels: Array<{ name: string }>
         html_url: string
+        updated_at: string
         pull_request?: unknown
       }>
     >(url, token, 'listOpenIssuesWithLabel')
@@ -245,19 +248,20 @@ export class GitHubClient {
         title: i.title,
         labels: (i.labels ?? []).map((l) => l.name),
         html_url: i.html_url,
+        updated_at: i.updated_at,
       }))
   }
 
-  /** Post a comment on an issue. */
+  /** Post a comment on an issue. Returns the comment's created_at timestamp on success. */
   async createIssueComment(
     owner: string,
     repo: string,
     issueNumber: number,
     body: string,
     host = 'github.com',
-  ): Promise<boolean> {
+  ): Promise<string | undefined> {
     const token = await this.getToken(owner, repo)
-    if (!token) return false
+    if (!token) return undefined
 
     const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
 
@@ -265,10 +269,10 @@ export class GitHubClient {
       `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/comments`,
       token,
       { body },
-      () => ({}),
+      (data) => ({ created_at: data.created_at as string }),
       'createIssueComment',
     )
-    return result !== undefined
+    return result?.created_at
   }
 
   /** List issues with optional state and label filters. */

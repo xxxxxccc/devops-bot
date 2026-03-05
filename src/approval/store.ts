@@ -56,13 +56,20 @@ CREATE TABLE IF NOT EXISTS pending_approvals (
 );
 
 CREATE TABLE IF NOT EXISTS processed_issues (
-  repo_key       TEXT NOT NULL,
-  issue_number   INTEGER NOT NULL,
-  task_id        TEXT,
-  source         TEXT NOT NULL,
-  processed_at   TEXT NOT NULL,
+  repo_key          TEXT NOT NULL,
+  issue_number      INTEGER NOT NULL,
+  task_id           TEXT,
+  source            TEXT NOT NULL,
+  processed_at      TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'processed',
+  issue_updated_at  TEXT,
   PRIMARY KEY (repo_key, issue_number)
 );
+`
+
+const MIGRATION_SQL = `
+ALTER TABLE processed_issues ADD COLUMN status TEXT NOT NULL DEFAULT 'processed';
+ALTER TABLE processed_issues ADD COLUMN issue_updated_at TEXT;
 `
 
 export class ApprovalStore {
@@ -74,7 +81,18 @@ export class ApprovalStore {
 
   init(): void {
     this.db.exec(SCHEMA_SQL)
+    this.runMigrations()
     log.info('Approval store table initialized')
+  }
+
+  private runMigrations(): void {
+    for (const stmt of MIGRATION_SQL.split(';').filter((s) => s.trim())) {
+      try {
+        this.db.exec(stmt)
+      } catch {
+        // Column already exists — safe to ignore
+      }
+    }
   }
 
   add(data: Omit<PendingApproval, 'id' | 'status' | 'createdAt' | 'resolvedAt'>): string {
@@ -137,11 +155,23 @@ export class ApprovalStore {
   /*  Processed issues tracking                                       */
   /* ---------------------------------------------------------------- */
 
-  isIssueProcessed(repoKey: string, issueNumber: number): boolean {
+  /**
+   * Returns true if the issue is fully processed and should be skipped.
+   * `needs_info` issues with a newer `updated_at` are NOT considered processed.
+   */
+  isIssueProcessed(repoKey: string, issueNumber: number, issueUpdatedAt?: string): boolean {
     const row = this.db
-      .prepare('SELECT 1 FROM processed_issues WHERE repo_key = ? AND issue_number = ?')
-      .get(repoKey, issueNumber)
-    return !!row
+      .prepare(
+        'SELECT status, issue_updated_at FROM processed_issues WHERE repo_key = ? AND issue_number = ?',
+      )
+      .get(repoKey, issueNumber) as { status: string; issue_updated_at: string | null } | undefined
+
+    if (!row) return false
+
+    if (row.status === 'needs_info' && issueUpdatedAt && row.issue_updated_at) {
+      return issueUpdatedAt <= row.issue_updated_at
+    }
+    return true
   }
 
   markIssueProcessed(
@@ -152,15 +182,36 @@ export class ApprovalStore {
   ): void {
     this.db
       .prepare(
-        `INSERT INTO processed_issues (repo_key, issue_number, task_id, source, processed_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO processed_issues (repo_key, issue_number, task_id, source, processed_at, status)
+         VALUES (?, ?, ?, ?, ?, 'processed')
          ON CONFLICT(repo_key, issue_number) DO UPDATE SET
            task_id = excluded.task_id,
            source = excluded.source,
-           processed_at = excluded.processed_at`,
+           processed_at = excluded.processed_at,
+           status = 'processed'`,
       )
       .run(repoKey, issueNumber, taskId, source, new Date().toISOString())
     log.info('Issue marked as processed', { repoKey, issueNumber, source })
+  }
+
+  markIssueNeedsInfo(
+    repoKey: string,
+    issueNumber: number,
+    issueUpdatedAt: string,
+    source: 'bot' | 'external' | 'workspace',
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO processed_issues (repo_key, issue_number, task_id, source, processed_at, status, issue_updated_at)
+         VALUES (?, ?, NULL, ?, ?, 'needs_info', ?)
+         ON CONFLICT(repo_key, issue_number) DO UPDATE SET
+           source = excluded.source,
+           processed_at = excluded.processed_at,
+           status = 'needs_info',
+           issue_updated_at = excluded.issue_updated_at`,
+      )
+      .run(repoKey, issueNumber, source, new Date().toISOString(), issueUpdatedAt)
+    log.info('Issue marked as needs_info', { repoKey, issueNumber, issueUpdatedAt })
   }
 
   /* ---------------------------------------------------------------- */
