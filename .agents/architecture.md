@@ -17,6 +17,7 @@ Intents:
 | `propose_task` | Tier 2: medium risk, create Issue and wait for polling-based approval (reaction: +1/heart/hooray) |
 | `create_issue` | Tier 3: high risk/unclear, create Issue for discussion only |
 | `add_project` | Bind a git repository to the current chat |
+| `add_workspace` | Bind a workspace meta-repo (with `workspace.json`) to the current chat; sub-projects cloned on demand |
 | `remove_project` | Unbind a project from the current chat |
 | `review_pr` | Trigger AI code review on a pull request (requires `prNumber`) |
 
@@ -80,9 +81,10 @@ src/
 │   ├── app-auth.ts            # GitHub App JWT + installation token lifecycle
 │   └── client.ts              # Unified GitHub API client (App or PAT)
 ├── project/
-│   ├── registry.ts            # SQLite-backed project registry
+│   ├── registry.ts            # SQLite-backed project registry (+ workspace_id FK)
 │   ├── repo-manager.ts        # Git clone/sync manager
-│   └── resolver.ts            # Project resolution orchestrator
+│   ├── resolver.ts            # Project resolution orchestrator (+ workspace methods)
+│   └── workspace.ts           # Workspace registry, manifest parser, context loader
 ├── memory/
 │   ├── store.ts               # SQLite-backed memory + JSONL export
 │   ├── db.ts                  # SQLite schema/queries + vec/fts
@@ -185,6 +187,18 @@ IM message (Feishu WebSocket / Slack Socket Mode)
        - review feedback stored in 'review' namespace (review_feedback, review_pattern types)
        - review_pattern memories selectively cross-injected into task context
          when ENABLE_REVIEW_CROSS_INJECT=true
+
+  -> workspace mode (add_workspace intent):
+       - user says "add workspace <git URL>"
+       - dispatcher detects add_workspace intent
+       - resolver clones workspace repo, parses workspace.json manifest
+       - workspace registered in workspaces table, bound to chat via chat_workspace_map
+       - CLAUDE.md content from workspace injected into dispatcher prompt as context
+       - on subsequent tasks: dispatcher AI sees all sub-projects in manifest
+       - AI returns targetGitUrl + targetBranch for the selected sub-project
+       - resolver clones sub-project on demand, registers in projects table with workspace_id FK
+       - normal sandbox + task flow proceeds using the sub-project's local path
+       - sub-projects registered this way are visible to review-poller automatically
 ```
 
 ## IM Platform Abstraction

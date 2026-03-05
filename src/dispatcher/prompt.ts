@@ -214,6 +214,11 @@ function buildActionsSection(): string[] {
     '  - Requires `gitUrl` in response',
     '  - Examples: "add project https://github.com/org/repo", "bind repo git@github.com:org/repo.git"',
     '',
+    '- **add_workspace**: User wants to bind a workspace (meta-repo with workspace.json) to this chat',
+    '  - Requires `gitUrl` in response',
+    '  - A workspace lists multiple sub-projects; after adding, all sub-projects become available',
+    '  - Examples: "add workspace https://github.com/org/workspace", "bind workspace git@github.com:org/ws.git"',
+    '',
     '- **remove_project**: User wants to unbind a project from this chat',
     '  - Requires `projectId` in response',
     '',
@@ -239,14 +244,16 @@ function buildResponseFormatSection(): string[] {
     'CRITICAL: Respond with ONLY a JSON object — NO prose, NO markdown fences, NO explanation before or after.',
     'Your entire response must be valid JSON and nothing else:',
     '{',
-    '  "intent": "chat | query_memory | execute_task | propose_task | create_issue | add_project | remove_project | review_pr",',
+    '  "intent": "chat | query_memory | execute_task | propose_task | create_issue | add_project | remove_project | review_pr | add_workspace",',
     '  "projectId": "project ID from the project list (required when projects exist)",',
     '  "reply": "your reply to the user",',
     '  "taskTitle": "title (required for execute_task, propose_task, create_issue)",',
     '  "taskDescription": "structured description, keep under 1000 chars",',
     '  "riskReason": "why this tier was chosen (required for execute_task, propose_task, create_issue)",',
     '  "issueLabels": ["optional", "labels"],',
-    '  "gitUrl": "git URL (required for add_project)",',
+    '  "gitUrl": "git URL (required for add_project / add_workspace)",',
+    '  "targetGitUrl": "git URL of the target sub-project (workspace mode, for on-demand clone)",',
+    '  "targetBranch": "branch override for the target sub-project (workspace mode)",',
     '  "prNumber": 123,',
     "  \"language\": \"detected language of the user message (e.g. 'zh-CN', 'en', 'ja')\"",
     '}',
@@ -255,7 +262,13 @@ function buildResponseFormatSection(): string[] {
     '- If the chat has exactly 1 project, auto-select it (always include its projectId)',
     '- If multiple projects, choose based on message context',
     '- If ambiguous which project, ask the user to clarify (intent=chat)',
-    '- add_project and remove_project do not need projectId',
+    '- add_project, add_workspace, and remove_project do not need projectId',
+    '',
+    '### Workspace sub-project selection rules',
+    '- When a workspace is bound, you can see all sub-projects in the workspace context',
+    '- For task/review intents targeting a sub-project, include `targetGitUrl` and `targetBranch` from the workspace manifest',
+    '- If the sub-project is already registered (has a projectId), also include `projectId`',
+    '- If the sub-project is NOT yet registered (not cloned), set `projectId` to the workspace-provided ID and include `targetGitUrl` — the system will clone it on demand',
   ]
 }
 
@@ -326,6 +339,21 @@ export interface DispatcherPromptMetrics {
   linksChars: number
 }
 
+export interface WorkspaceProjectEntry {
+  id: string
+  gitUrl: string
+  branch: string
+  lang?: string
+  description?: string
+  cloned: boolean
+}
+
+export interface WorkspaceContextEntry {
+  id: string
+  context: string
+  projects: WorkspaceProjectEntry[]
+}
+
 export function buildDispatcherPrompt(
   parsed: ParsedMessage,
   recentChat: ChatMessage[],
@@ -339,6 +367,7 @@ export function buildDispatcherPrompt(
     memoryIntent: boolean
     memoryConfig: DispatcherMemoryConfig
     chatProjects?: Array<{ id: string; gitUrl: string; lastUsed: string }>
+    workspaces?: WorkspaceContextEntry[]
   },
 ): { prompt: string; metrics: DispatcherPromptMetrics } {
   const config = opts.memoryConfig
@@ -438,6 +467,7 @@ export function buildDispatcherPrompt(
   }
 
   // 4. Chat project list (multi-project mode)
+  const hasWorkspaces = opts.workspaces && opts.workspaces.length > 0
   if (opts.chatProjects && opts.chatProjects.length > 0) {
     parts.push('\n## Projects in this chat')
     for (let i = 0; i < opts.chatProjects.length; i++) {
@@ -445,14 +475,46 @@ export function buildDispatcherPrompt(
       const ago = formatTimeAgo(p.lastUsed)
       parts.push(`${i + 1}. \`${p.id}\` (last used: ${ago})`)
     }
-    if (opts.chatProjects.length === 1) {
+    if (opts.chatProjects.length === 1 && !hasWorkspaces) {
       parts.push('\nOnly one project — auto-select it for all intents.')
     }
-  } else if (!opts.projectPath) {
+  } else if (!opts.projectPath && !hasWorkspaces) {
     parts.push(
       '\n## Projects in this chat',
-      'No projects bound. Tell the user to add one with "add project <git URL>".',
+      'No projects bound. Tell the user to add one with "add project <git URL>" or "add workspace <git URL>".',
     )
+  }
+
+  // 4b. Workspace context (workspace mode)
+  if (hasWorkspaces) {
+    for (const ws of opts.workspaces!) {
+      parts.push(`\n## Workspace: ${ws.id}`)
+
+      if (ws.projects.length > 0) {
+        parts.push('\n### Available Sub-Projects')
+        parts.push(
+          '| ID | Language | Branch | Status | Git URL | Description |',
+          '|----|----------|--------|--------|---------|-------------|',
+        )
+        for (const p of ws.projects) {
+          const status = p.cloned ? 'cloned' : 'not yet cloned'
+          parts.push(
+            `| ${p.id} | ${p.lang || '-'} | ${p.branch} | ${status} | ${p.gitUrl} | ${p.description || '-'} |`,
+          )
+        }
+        parts.push(
+          '',
+          'When targeting a sub-project, include `targetGitUrl` and `targetBranch` in your response.',
+          'The system will clone it on demand if not yet available locally.',
+        )
+      }
+
+      if (ws.context) {
+        const truncated =
+          ws.context.length > 4000 ? `${ws.context.slice(0, 4000)}\n... [truncated]` : ws.context
+        parts.push('\n### Workspace Guidelines', '', truncated)
+      }
+    }
   }
 
   // 5. New message

@@ -37,6 +37,7 @@ export interface DispatcherResponse {
     | 'add_project'
     | 'remove_project'
     | 'review_pr'
+    | 'add_workspace'
   reply?: string
   projectId?: string
   taskTitle?: string
@@ -45,8 +46,12 @@ export interface DispatcherResponse {
   riskReason?: string
   /** Labels for issues (e.g. ["enhancement", "bug"]) */
   issueLabels?: string[]
-  /** Git URL for add_project intent */
+  /** Git URL for add_project or add_workspace intent */
   gitUrl?: string
+  /** Git URL of the target sub-project (workspace mode) */
+  targetGitUrl?: string
+  /** Target branch override (from workspace manifest) */
+  targetBranch?: string
   /** PR number for review_pr intent */
   prNumber?: number
   /** Detected language of the user message (e.g. "zh-CN", "en") */
@@ -495,7 +500,7 @@ export function extractJSON(text: string): DispatcherResponse | null {
 
   if (text.includes('"intent"')) {
     const intentMatch = text.match(
-      /"intent"\s*:\s*"(chat|query_memory|execute_task|propose_task|create_issue|add_project|remove_project)"/,
+      /"intent"\s*:\s*"(chat|query_memory|execute_task|propose_task|create_issue|add_project|remove_project|review_pr|add_workspace)"/,
     )
     if (intentMatch) {
       const intent = intentMatch[1] as DispatcherResponse['intent']

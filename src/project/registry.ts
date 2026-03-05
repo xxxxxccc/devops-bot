@@ -19,6 +19,7 @@ export interface ProjectRecord {
   defaultBranch: string
   lastSynced: string | null
   createdAt: string
+  workspaceId: string | null
 }
 
 export interface ChatProjectBinding {
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS projects (
   local_path     TEXT NOT NULL,
   default_branch TEXT DEFAULT 'main',
   last_synced    TEXT,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  workspace_id   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chat_project_map (
@@ -43,6 +45,10 @@ CREATE TABLE IF NOT EXISTS chat_project_map (
   last_used   TEXT NOT NULL,
   PRIMARY KEY (chat_id, project_id)
 );
+`
+
+const MIGRATE_WORKSPACE_ID_SQL = `
+ALTER TABLE projects ADD COLUMN workspace_id TEXT;
 `
 
 export class ProjectRegistry {
@@ -55,24 +61,63 @@ export class ProjectRegistry {
   /** Create tables if they don't exist. Call after database is open. */
   init(): void {
     this.db.exec(REGISTRY_SCHEMA_SQL)
+    this.migrateWorkspaceId()
     log.info('Project registry tables initialized')
   }
 
-  register(id: string, gitUrl: string, localPath: string, defaultBranch = 'main'): ProjectRecord {
+  /** Add workspace_id column to existing projects table if missing. */
+  private migrateWorkspaceId(): void {
+    try {
+      const cols = this.db.prepare("PRAGMA table_info('projects')").all() as Array<{
+        name: string
+      }>
+      if (!cols.some((c) => c.name === 'workspace_id')) {
+        this.db.exec(MIGRATE_WORKSPACE_ID_SQL)
+        log.info('Migrated projects table: added workspace_id column')
+      }
+    } catch {
+      /* column likely already exists */
+    }
+  }
+
+  register(
+    id: string,
+    gitUrl: string,
+    localPath: string,
+    defaultBranch = 'main',
+    workspaceId?: string,
+  ): ProjectRecord {
     const now = new Date().toISOString()
     this.db
       .prepare(
-        `INSERT INTO projects (id, git_url, local_path, default_branch, created_at)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO projects (id, git_url, local_path, default_branch, created_at, workspace_id)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            git_url = excluded.git_url,
            local_path = excluded.local_path,
-           default_branch = excluded.default_branch`,
+           default_branch = excluded.default_branch,
+           workspace_id = excluded.workspace_id`,
       )
-      .run(id, gitUrl, localPath, defaultBranch, now)
+      .run(id, gitUrl, localPath, defaultBranch, now, workspaceId ?? null)
 
-    log.info('Project registered', { id, gitUrl })
-    return { id, gitUrl, localPath, defaultBranch, lastSynced: null, createdAt: now }
+    log.info('Project registered', { id, gitUrl, workspaceId })
+    return {
+      id,
+      gitUrl,
+      localPath,
+      defaultBranch,
+      lastSynced: null,
+      createdAt: now,
+      workspaceId: workspaceId ?? null,
+    }
+  }
+
+  /** List all projects belonging to a workspace. */
+  getByWorkspace(workspaceId: string): ProjectRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM projects WHERE workspace_id = ? ORDER BY created_at')
+      .all(workspaceId)
+    return rows.map(toProjectRecord)
   }
 
   getById(id: string): ProjectRecord | undefined {
@@ -148,5 +193,6 @@ function toProjectRecord(row: any): ProjectRecord {
     defaultBranch: row.default_branch,
     lastSynced: row.last_synced,
     createdAt: row.created_at,
+    workspaceId: row.workspace_id ?? null,
   }
 }

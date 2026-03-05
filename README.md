@@ -41,7 +41,7 @@ flowchart LR
     Router -->|"propose_task"| TaskExec
     Router -->|"create_issue"| TaskExec
     Router -->|"review_pr"| ReviewAI["PR Review AI\n(TASK_MODEL)"]
-    Router -->|"add_project / remove_project"| TaskExec
+    Router -->|"add_project / add_workspace"| TaskExec
     Router <-->|"read/write"| Memory
     MemoryQuery <-->|"retrieve"| Memory
     TaskExec -->|"enriched description"| Executor["AIExecutor"]
@@ -182,6 +182,56 @@ Safety measures:
 
 Controlled by `ENABLE_SELF_REVIEW=true` — no additional configuration needed.
 
+## Workspace Mode
+
+Instead of registering individual projects one by one, you can register a single **workspace meta-repo** that describes all your organization's projects. The dispatcher AI reads the manifest and selects the correct sub-project per task, cloning on demand.
+
+### Setup
+
+1. Create a `workspace.json` in your workspace repo root:
+
+```json
+{
+  "defaultBranch": "dev",
+  "projects": [
+    {
+      "id": "my-app",
+      "gitUrl": "git@github.com:org/my-app.git",
+      "branch": "dev",
+      "lang": "TypeScript",
+      "description": "Main web application"
+    },
+    {
+      "id": "my-api",
+      "gitUrl": "git@github.com:org/my-api.git",
+      "branch": "dev",
+      "lang": "Go",
+      "description": "Backend API service"
+    }
+  ]
+}
+```
+
+2. Optionally add a `CLAUDE.md` with development guidelines, conventions, and project relationships — injected into the dispatcher AI as context.
+
+3. In chat, say: `add workspace https://github.com/org/my-workspace`
+
+### How It Works
+
+- The dispatcher AI sees all sub-projects from the manifest and workspace guidelines
+- When a task targets a sub-project, the system clones it on demand (lazy)
+- Sub-projects are registered in the same `projects` table, reusing all existing task/review/approval infrastructure
+- The workspace's `branch` field overrides auto-detected default branches (e.g. `dev` instead of `main`)
+- Already-cloned sub-projects are synced, not re-cloned
+
+### Workspace vs Multi-Project
+
+| Mode | Registration | When to use |
+|------|-------------|-------------|
+| **Single-project** | `TARGET_PROJECT_PATH` env var | One repo, simple setup |
+| **Multi-project** | `add project <URL>` per repo | Few repos, manual control |
+| **Workspace** | `add workspace <URL>` once | Many repos, org-wide AI agent |
+
 ## Features
 
 - **Multi-provider AI**: Anthropic (Claude), OpenAI, or any OpenAI-compatible API (DeepSeek, Groq, Together, etc.)
@@ -191,6 +241,7 @@ Controlled by `ENABLE_SELF_REVIEW=true` — no additional configuration needed.
 - **Sandbox Execution**: Tasks run in isolated Git worktree sandboxes, changes submitted as Draft PRs
 - **Parallel Execution**: Per-project serial, cross-project parallel task execution (configurable concurrency)
 - **Multi-Project**: Manage multiple git repositories from a single chat group
+- **Workspace Mode**: Register a workspace meta-repo (`workspace.json`) to manage all org sub-projects from one entry point, with on-demand cloning
 - **GitHub App Auth**: Secure authentication via GitHub App (replaces PAT)
 - **Three-Tier Tasks**: AI-driven risk assessment routes tasks through execute/propose/issue tiers
 - **PR Review**: AI code review with self-review (+ auto-fix loop), IM command, polling, and webhook triggers
@@ -294,6 +345,7 @@ Edit `.env.local`:
 # TARGET_PROJECT_PATH=/path/to/your/project
 
 # Multi-project mode: projects added via chat ("add project <git URL>")
+# Workspace mode: "add workspace <git URL>" for meta-repo with workspace.json
 # No TARGET_PROJECT_PATH needed
 
 # GitHub App (recommended for GitHub repos):
@@ -507,7 +559,8 @@ devops-bot/
 │   ├── project/
 │   │   ├── registry.ts       # SQLite-backed project registry
 │   │   ├── repo-manager.ts   # Git clone/sync manager
-│   │   └── resolver.ts       # Project resolution orchestrator
+│   │   ├── resolver.ts       # Project resolution orchestrator
+│   │   └── workspace.ts      # Workspace registry, manifest parser, context loader
 │   ├── mcp/
 │   │   └── server.ts         # MCP server for AI tools
 │   ├── tools/

@@ -31,6 +31,7 @@ import {
   buildDispatcherSystemPrompt,
   buildDispatcherPrompt,
   buildEnrichedTaskDescription,
+  type WorkspaceContextEntry,
 } from './prompt.js'
 
 const log = createLogger('dispatcher')
@@ -146,6 +147,22 @@ export class Dispatcher {
       links: msg.links,
     }
 
+    // Build workspace context for workspace mode
+    const workspaceInfos = resolver.getWorkspacesForChat(msg.chatId)
+    const clonedGitUrls = new Set(chatProjects.filter((p) => p.gitUrl).map((p) => p.gitUrl))
+    const workspaces: WorkspaceContextEntry[] = workspaceInfos.map((ws) => ({
+      id: ws.record.id,
+      context: ws.context,
+      projects: ws.manifest.projects.map((p) => ({
+        id: p.id,
+        gitUrl: p.gitUrl,
+        branch: p.branch,
+        lang: p.lang,
+        description: p.description,
+        cloned: clonedGitUrls.has(p.gitUrl),
+      })),
+    }))
+
     const promptBuild = buildDispatcherPrompt(parsed, recentChat, {
       projectContext: effectivePath ? this.projectScanner.getProjectContext(effectivePath) : '',
       memoryStore: this.memoryStoreRef,
@@ -156,6 +173,7 @@ export class Dispatcher {
       memoryIntent: hasMemoryIntent(msg.text),
       memoryConfig,
       chatProjects,
+      workspaces: workspaces.length > 0 ? workspaces : undefined,
     })
 
     if (memoryConfig.metricsEnabled) {
@@ -265,6 +283,20 @@ export class Dispatcher {
     _chatProjects: Array<{ id: string; localPath: string }>,
     fallbackPath: string,
   ): Promise<string> {
+    // Workspace mode: resolve sub-project by git URL (on-demand clone)
+    if (response.targetGitUrl) {
+      const resolver = await this.server.getProjectResolver()
+      const resolved = await resolver.resolveFromWorkspace(
+        response.targetGitUrl,
+        chatId,
+        response.targetBranch,
+      )
+      if (resolved) return resolved
+      log.warn('Workspace sub-project resolve failed, falling back', {
+        targetGitUrl: response.targetGitUrl,
+      })
+    }
+
     if (!response.projectId) return fallbackPath
 
     if (response.projectId === 'local') return fallbackPath
@@ -338,6 +370,11 @@ export class Dispatcher {
 
       case 'review_pr': {
         await this.handleReviewPR(response, msg, ctx)
+        break
+      }
+
+      case 'add_workspace': {
+        await this.handleAddWorkspace(response, msg, ctx)
         break
       }
     }
@@ -822,6 +859,73 @@ export class Dispatcher {
       {
         role: 'assistant',
         content: `Removed project binding: ${response.projectId}`,
+        timestamp: new Date().toISOString(),
+      },
+      ctx.projectPath,
+    )
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  add_workspace: bind a workspace meta-repo to this chat           */
+  /* ---------------------------------------------------------------- */
+
+  private async handleAddWorkspace(
+    response: DispatcherResponse,
+    msg: IMMessage,
+    ctx: { thinkingCardId?: string; replyTo?: string; store: MemoryStore; projectPath: string },
+  ): Promise<void> {
+    if (!response.gitUrl) {
+      await this.deliverReply(
+        msg.chatId,
+        'Please provide a workspace Git repository URL (e.g. https://github.com/org/workspace)',
+        ctx.thinkingCardId,
+        undefined,
+        ctx.replyTo,
+      )
+      return
+    }
+
+    const resolver = await this.server.getProjectResolver()
+
+    await this.deliverReply(
+      msg.chatId,
+      `🔄 Adding workspace ${response.gitUrl}…`,
+      ctx.thinkingCardId,
+      { title: '📦 Adding Workspace', color: 'blue' },
+      ctx.replyTo,
+    )
+
+    const wsInfo = await resolver.ensureAndRegisterWorkspace(response.gitUrl, msg.chatId)
+    if (!wsInfo) {
+      await this.platform.sendText(
+        msg.chatId,
+        `❌ Failed to add workspace. Ensure the URL is correct, accessible, and contains a valid workspace.json.`,
+        { replyTo: msg.messageId },
+      )
+      return
+    }
+
+    const projectList = wsInfo.manifest.projects
+      .map(
+        (p, i) =>
+          `${i + 1}. **${p.id}** (${p.lang || 'unknown'}, branch: \`${p.branch}\`)${p.description ? ` — ${p.description}` : ''}`,
+      )
+      .join('\n')
+
+    await this.platform.sendCard(
+      msg.chatId,
+      {
+        markdown: `✅ Workspace added: \`${wsInfo.record.id}\`\n\n**${wsInfo.manifest.projects.length} sub-projects discovered:**\n${projectList}\n\nSub-projects will be cloned on demand when you create tasks targeting them.`,
+        header: { title: '📦 Workspace Added', color: 'green' },
+      },
+      { replyTo: msg.messageId },
+    )
+
+    ctx.store.addMessage(
+      msg.chatId,
+      {
+        role: 'assistant',
+        content: `Added workspace: ${wsInfo.record.id} (${wsInfo.manifest.projects.length} sub-projects)`,
         timestamp: new Date().toISOString(),
       },
       ctx.projectPath,

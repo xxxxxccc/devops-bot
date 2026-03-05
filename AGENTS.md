@@ -27,6 +27,7 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 ## Project Context
 
 - Supports **multi-project mode** — projects added via chat (`add_project` intent), auto-cloned to `~/.devops-bot/repos/`
+- Supports **workspace mode** — register a workspace meta-repo (`add_workspace` intent) with `workspace.json` manifest; dispatcher AI sees all sub-projects and clones on demand via `targetGitUrl`
 - Falls back to **single-project mode** if `TARGET_PROJECT_PATH` is set
 - IM bot (Feishu or Slack) is the **primary user interface** — there is no web frontend
 - Two AI layers: **fast model** (dispatcher) and **powerful model** (task executor) — provider-agnostic
@@ -54,6 +55,7 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 - [Code Conventions](.agents/code-conventions.md) — TypeScript patterns, Biome rules, file structure
 - GitHub App auth: `src/github/app-auth.ts`, `src/github/client.ts`
 - Multi-project: `src/project/registry.ts`, `src/project/repo-manager.ts`, `src/project/resolver.ts`
+- Workspace mode: `src/project/workspace.ts` (registry, manifest parser, context loader)
 - Issue AI & Approval: `src/approval/issue-ai.ts`, `src/approval/poller.ts`, `src/approval/store.ts`
 - PR Review: `src/review/engine.ts`, `src/review/ai-client.ts`, `src/review/diff-parser.ts`, `src/review/poller.ts`
 - Auto-fix loop: `src/webhook/task-runner.ts` (`selfReviewAndFix`), `src/webhook/prompt.ts` (`buildReviewFixPrompt`), `src/sandbox/manager.ts` (`createSandboxOnBranch`)
