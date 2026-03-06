@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { simpleGit } from 'simple-git'
 import { createLogger } from '../infra/logger.js'
+import { detectRepo } from './pr-creator.js'
 
 const log = createLogger('sandbox')
 
@@ -149,7 +150,12 @@ export class SandboxManager {
 
     log.info('Creating sandbox on existing branch', { taskId, existingBranch, worktreePath })
 
-    await git.fetch(['origin', existingBranch])
+    const authArgs = await getGitHubAuthArgs(projectPath)
+    if (authArgs.length > 0) {
+      await git.raw([...authArgs, 'fetch', 'origin', existingBranch])
+    } else {
+      await git.fetch(['origin', existingBranch])
+    }
 
     // -B resets local branch to match remote; creates worktree in one step
     await git.raw([
@@ -205,11 +211,7 @@ export class SandboxManager {
         taskId: sandbox.taskId,
         branch: sandbox.branchName,
       })
-      const { pushOnly } = await import('./pr-creator.js')
-      await pushOnly({
-        worktreePath: sandbox.worktreePath,
-        branchName: sandbox.branchName,
-      })
+      await authenticatedPush(sandbox.worktreePath, sandbox.branchName, sandbox.projectPath)
       return {}
     }
 
@@ -466,6 +468,62 @@ function detectInstallCommands(projectPath: string): InstallCommand[] {
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Build `-c http.extraHeader=Authorization: Basic ...` args for GitHub repos.
+ * Returns an empty array for non-GitHub repos or when no token is available.
+ */
+async function getGitHubAuthArgs(projectPath: string): Promise<string[]> {
+  try {
+    const info = await detectRepo(projectPath)
+    if (!info.host.includes('github') || !info.owner) return []
+
+    const { getGitHubClient } = await import('../github/client.js')
+    const client = await getGitHubClient()
+    const token = await client.getToken(info.owner, info.repo)
+    if (!token) return []
+
+    const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64')
+    return ['-c', `http.extraHeader=Authorization: Basic ${basicAuth}`]
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Push a branch with GitHub App auth if available, falling back to plain push.
+ */
+async function authenticatedPush(
+  worktreePath: string,
+  branchName: string,
+  projectPath: string,
+): Promise<void> {
+  const git = simpleGit(worktreePath)
+  try {
+    const info = await detectRepo(projectPath)
+    if (info.host.includes('github') && info.owner) {
+      const { getGitHubClient } = await import('../github/client.js')
+      const client = await getGitHubClient()
+      const token = await client.getToken(info.owner, info.repo)
+      if (token) {
+        const basicAuth = Buffer.from(`x-access-token:${token}`).toString('base64')
+        const httpsRemote = `https://${info.host}/${info.owner}/${info.repo}.git`
+        await git.raw([
+          '-c',
+          `http.extraHeader=Authorization: Basic ${basicAuth}`,
+          'push',
+          '--set-upstream',
+          httpsRemote,
+          branchName,
+        ])
+        return
+      }
+    }
+  } catch {
+    // Fall through to plain push
+  }
+  await git.push(['--set-upstream', 'origin', branchName])
+}
 
 /** Convert a task title to a short kebab-case slug (max 30 chars) */
 function toSlug(title: string): string {
