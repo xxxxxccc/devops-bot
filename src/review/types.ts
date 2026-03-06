@@ -12,6 +12,8 @@ export interface ReviewRequest {
   imChatId?: string
   /** Source that triggered this review. */
   trigger: 'self-review' | 'im-command' | 'poller' | 'webhook'
+  /** Output language for review summary and comments (e.g. 'zh-CN', 'en'). */
+  language?: string
 }
 
 export interface LineComment {

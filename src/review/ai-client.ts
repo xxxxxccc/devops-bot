@@ -43,6 +43,7 @@ export async function reviewWithAI(params: {
   projectRules?: string
   skillContent?: string
   reviewPatterns?: string
+  language?: string
 }): Promise<ReviewResult> {
   const provider = await getProvider()
 
@@ -50,6 +51,7 @@ export async function reviewWithAI(params: {
     projectRules: params.projectRules,
     skillContent: params.skillContent,
     reviewPatterns: params.reviewPatterns,
+    language: params.language,
   })
 
   const userPrompt = buildReviewUserPrompt({

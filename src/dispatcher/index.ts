@@ -420,21 +420,23 @@ export class Dispatcher {
       msg.senderName || 'unknown',
     )
 
-    // Create tracking Issue (non-blocking)
-    const issue = await createIssue({
-      projectPath,
-      title: response.taskTitle,
-      body: buildIssueBody({
-        description: enrichedDescription,
-        createdBy: msg.senderName || 'unknown',
-      }),
-      labels: response.issueLabels ?? ['devops-bot'],
-    }).catch((e) => {
-      log.warn('Issue creation failed, proceeding with task', {
-        error: e instanceof Error ? e.message : String(e),
-      })
-      return undefined
-    })
+    // Skip issue creation when modifying an existing PR
+    const issue = response.prNumber
+      ? undefined
+      : await createIssue({
+          projectPath,
+          title: response.taskTitle,
+          body: buildIssueBody({
+            description: enrichedDescription,
+            createdBy: msg.senderName || 'unknown',
+          }),
+          labels: response.issueLabels ?? ['devops-bot'],
+        }).catch((e) => {
+          log.warn('Issue creation failed, proceeding with task', {
+            error: e instanceof Error ? e.message : String(e),
+          })
+          return undefined
+        })
 
     const taskId = await this.server.createTaskFromIM({
       title: response.taskTitle,
@@ -450,6 +452,7 @@ export class Dispatcher {
         riskReason: response.riskReason,
         tier: 'execute_task',
         language: response.language,
+        prNumber: response.prNumber || undefined,
       },
       attachments: msg.attachments.map((a) => ({
         filename: a.filename,
@@ -1006,6 +1009,7 @@ export class Dispatcher {
         projectPath,
         imChatId: msg.chatId,
         trigger: 'im-command',
+        language: response.language,
       })
 
       const pr = await githubClient.getPR(

@@ -120,6 +120,7 @@ export class ReviewEngine {
       projectRules: projectRules || undefined,
       skillContent: skillContent || undefined,
       reviewPatterns,
+      language: request.language,
     })
 
     result.prNumber = prNumber

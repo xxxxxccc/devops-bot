@@ -34,10 +34,12 @@ import { ReviewEngine } from '../review/engine.js'
 import type { SSEManager } from './sse.js'
 import {
   buildExecutorSystemPrompt,
+  buildPRModifyPrompt,
   buildReviewFixPrompt,
   detectJiraLinks,
   detectFigmaLinks,
 } from './prompt.js'
+import { detectRepo } from '../sandbox/pr-creator.js'
 
 const log = createLogger('task-runner')
 
@@ -220,7 +222,8 @@ export class TaskRunner {
   }
 
   private async executeOneTask(item: QueueItem): Promise<void> {
-    const { taskId, prompt, metadata, projectPath } = item
+    const { taskId, metadata, projectPath } = item
+    let { prompt } = item
 
     const runningTask = this.store.update(taskId, { status: 'running' })
     if (runningTask) {
@@ -239,10 +242,40 @@ export class TaskRunner {
 
     let sandbox: Sandbox | undefined
     let mcpConfigPath: string | undefined
+    const prNumber = metadata?.prNumber as number | undefined
 
     try {
       const taskTitle = (metadata?.title as string) || taskId
-      sandbox = await this.sandboxManager.createSandbox(taskId, taskTitle, projectPath)
+
+      if (prNumber && this.githubClient) {
+        // PR modification mode: checkout existing PR branch
+        const prContext = await this.preparePRModifyContext(prNumber, projectPath)
+        if (!prContext) {
+          throw new Error(
+            `Cannot prepare context for PR #${prNumber} — PR may be closed or project has no git remote`,
+          )
+        }
+        sandbox = await this.sandboxManager.createSandboxOnBranch(
+          taskId,
+          prContext.prBranch,
+          projectPath,
+        )
+
+        prompt = buildPRModifyPrompt({
+          taskId,
+          title: taskTitle,
+          description: metadata?.description as string,
+          prNumber,
+          owner: prContext.owner,
+          repo: prContext.repo,
+          prBranch: prContext.prBranch,
+          diff: prContext.diff,
+          discussion: prContext.discussion,
+          language: metadata?.language as string | undefined,
+        })
+      } else {
+        sandbox = await this.sandboxManager.createSandbox(taskId, taskTitle, projectPath)
+      }
 
       mcpConfigPath = await this.createMCPConfig(sandbox.worktreePath)
       const task = this.store.get(taskId)
@@ -272,8 +305,11 @@ export class TaskRunner {
         await this.notifyCompletion(updatedTask)
         await this.notifyIssueResult(updatedTask)
 
-        if (prUrl) {
-          void this.triggerSelfReview(updatedTask, prUrl, projectPath)
+        // For PR modifications, construct the prUrl for self-review
+        const effectivePrUrl =
+          prUrl || (prNumber ? await this.buildPRUrlFromMetadata(prNumber, projectPath) : undefined)
+        if (effectivePrUrl) {
+          void this.triggerSelfReview(updatedTask, effectivePrUrl, projectPath)
         }
       }
 
@@ -445,6 +481,68 @@ export class TaskRunner {
   /*  Self-review + auto-fix loop                                      */
   /* ---------------------------------------------------------------- */
 
+  /* ---------------------------------------------------------------- */
+  /*  PR modification helpers                                          */
+  /* ---------------------------------------------------------------- */
+
+  private async preparePRModifyContext(
+    prNumber: number,
+    projectPath: string,
+  ): Promise<
+    | {
+        owner: string
+        repo: string
+        host: string
+        prBranch: string
+        diff: string
+        discussion?: import('../review/prompt.js').PRDiscussionContext
+      }
+    | undefined
+  > {
+    if (!this.githubClient) return undefined
+
+    const repoInfo = await detectRepo(projectPath)
+    if (!repoInfo.owner || !repoInfo.repo) return undefined
+
+    const host = repoInfo.host || 'github.com'
+    const pr = await this.githubClient.getPR(repoInfo.owner, repoInfo.repo, prNumber, host)
+    if (!pr || pr.state !== 'open') {
+      log.warn('PR is not open for modification', { prNumber, state: pr?.state })
+      return undefined
+    }
+
+    const diff = await this.githubClient.getPRDiff(repoInfo.owner, repoInfo.repo, prNumber, host)
+    const discussion = await this.githubClient.getPRConversation(
+      repoInfo.owner,
+      repoInfo.repo,
+      prNumber,
+      host,
+    )
+
+    return {
+      owner: repoInfo.owner,
+      repo: repoInfo.repo,
+      host,
+      prBranch: pr.head,
+      diff: diff || '',
+      discussion,
+    }
+  }
+
+  private async buildPRUrlFromMetadata(
+    prNumber: number,
+    projectPath: string,
+  ): Promise<string | undefined> {
+    const repoInfo = await detectRepo(projectPath)
+    if (!repoInfo.owner || !repoInfo.repo) return undefined
+    const host = repoInfo.host || 'github.com'
+    return `https://${host}/${repoInfo.owner}/${repoInfo.repo}/pull/${prNumber}`
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Self-review + auto-fix loop                                      */
+  /* ---------------------------------------------------------------- */
+
   private static readonly MAX_FIX_ROUNDS = 2
 
   private async triggerSelfReview(task: Task, prUrl: string, projectPath: string): Promise<void> {
@@ -494,6 +592,7 @@ export class TaskRunner {
         projectPath,
         imChatId: task.metadata?.imChatId as string | undefined,
         trigger: 'self-review',
+        language: (task.metadata?.language as string) || undefined,
       })
 
       log.info('Self-review completed', {

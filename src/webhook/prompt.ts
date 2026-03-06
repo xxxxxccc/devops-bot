@@ -511,6 +511,83 @@ ${attachmentsSection}
 import type { ReviewResult, LineComment as ReviewLineComment } from '../review/types.js'
 import type { PRDiscussionContext } from '../review/prompt.js'
 
+const MAX_DIFF_CHARS = 80_000
+
+export function buildPRModifyPrompt(params: {
+  taskId: string
+  title: string
+  description?: string
+  prNumber: number
+  owner: string
+  repo: string
+  prBranch: string
+  diff: string
+  discussion?: PRDiscussionContext
+  language?: string
+  attachments?: Array<{ filename: string; originalname: string; path: string; mimetype?: string }>
+}): string {
+  const parts: string[] = [
+    '## PR Modification Task',
+    '',
+    `**Task ID:** ${params.taskId}`,
+    `**Title:** ${params.title}`,
+    `**PR:** #${params.prNumber} (${params.owner}/${params.repo})`,
+    `**Branch:** ${params.prBranch}`,
+    '',
+    '### Modification Instructions',
+    '',
+    params.description || params.title,
+  ]
+
+  if (params.diff) {
+    const truncated =
+      params.diff.length > MAX_DIFF_CHARS
+        ? `${params.diff.slice(0, MAX_DIFF_CHARS)}\n\n... [diff truncated, ${params.diff.length - MAX_DIFF_CHARS} chars omitted]`
+        : params.diff
+    parts.push('', '### Current PR Diff', '', '```diff', truncated, '```')
+  }
+
+  if (params.discussion) {
+    const { issueComments, reviewSummaries } = params.discussion
+    if (issueComments.length > 0 || reviewSummaries.length > 0) {
+      parts.push('', '### PR Discussion (review comments and conversations)', '')
+      for (const r of reviewSummaries.slice(0, 10)) {
+        parts.push(`- [${r.user}] (review: ${r.state}) ${r.body.slice(0, 500)}`)
+      }
+      for (const c of issueComments.slice(0, 15)) {
+        parts.push(`- [${c.user}] ${c.body.slice(0, 500)}`)
+      }
+    }
+  }
+
+  if (params.attachments && params.attachments.length > 0) {
+    parts.push(
+      '',
+      '### Attachments',
+      '',
+      ...params.attachments.map((a) => `- **${a.originalname}** -> \`${a.path}\``),
+    )
+  }
+
+  parts.push(
+    '',
+    '### Instructions',
+    '',
+    '- You are working on an EXISTING PR branch — apply the requested modifications',
+    '- Read the current PR diff and discussion to understand what has already been done',
+    '- Make only the changes described in the modification instructions',
+    '- After making changes, run type checks and lint checks to verify',
+    '- Commit with a descriptive message summarizing what was changed',
+    '- You MUST call `submit_summary` at the end',
+    '',
+    '---',
+    '',
+    `**Remember:** When you are done, you MUST call \`submit_summary\` with task_id="${params.taskId}"`,
+  )
+
+  return parts.join('\n')
+}
+
 export function buildReviewFixPrompt(params: {
   taskId: string
   review: ReviewResult

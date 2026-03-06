@@ -8,6 +8,7 @@ export function buildReviewSystemPrompt(params: {
   projectRules?: string
   skillContent?: string
   reviewPatterns?: string
+  language?: string
 }): string {
   const sections: string[] = [
     '# Code Review Expert',
@@ -43,6 +44,16 @@ export function buildReviewSystemPrompt(params: {
 
   if (params.reviewPatterns) {
     sections.push('', '## Past Review Patterns (from Memory)', '', params.reviewPatterns)
+  }
+
+  if (params.language) {
+    sections.push(
+      '',
+      '## Output Language',
+      '',
+      `Write the "summary" and all comment "body" fields in **${params.language}**.`,
+      'Keep file paths, code snippets, and JSON keys in English.',
+    )
   }
 
   sections.push(
