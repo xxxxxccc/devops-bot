@@ -303,6 +303,7 @@ export class TaskRunner {
           timestamp: new Date().toISOString(),
         })
         await this.memorizeTaskLifecycle(updatedTask, projectPath)
+        await this.recordCompletionInChat(updatedTask, projectPath)
         await this.notifyCompletion(updatedTask)
         await this.notifyIssueResult(updatedTask)
 
@@ -328,6 +329,7 @@ export class TaskRunner {
           timestamp: new Date().toISOString(),
         })
         await this.memorizeTaskFailure(failedTask, projectPath)
+        await this.recordCompletionInChat(failedTask, projectPath)
         await this.notifyFailure(failedTask)
         await this.notifyIssueResult(failedTask)
       }
@@ -837,6 +839,30 @@ export class TaskRunner {
   /* ---------------------------------------------------------------- */
   /*  Memory feedback                                                  */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * Write the task result into the chat message history so the dispatcher
+   * can reference the correct PR number / status in follow-up messages.
+   */
+  private async recordCompletionInChat(task: Task, projectPath: string): Promise<void> {
+    const chatId = task.metadata?.imChatId as string | undefined
+    if (!chatId) return
+
+    try {
+      const store = await getMemoryStore()
+      const title = (task.metadata?.title as string) || task.id
+      const parts = [`Task ${task.status}: ${title}`]
+      if (task.prUrl) parts.push(`PR: ${task.prUrl}`)
+      if (task.status === 'failed' && task.error) parts.push(`Error: ${task.error.slice(0, 200)}`)
+      store.addMessage(
+        chatId,
+        { role: 'assistant', content: parts.join('\n'), timestamp: new Date().toISOString() },
+        projectPath,
+      )
+    } catch {
+      // best effort
+    }
+  }
 
   private async memorizeTaskLifecycle(task: Task, projectPath: string): Promise<void> {
     try {
