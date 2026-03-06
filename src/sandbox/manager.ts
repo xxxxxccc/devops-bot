@@ -150,11 +150,13 @@ export class SandboxManager {
 
     log.info('Creating sandbox on existing branch', { taskId, existingBranch, worktreePath })
 
+    // Explicit refspec so that origin/<branch> tracking ref is created
+    const refspec = `+refs/heads/${existingBranch}:refs/remotes/origin/${existingBranch}`
     const authArgs = await getGitHubAuthArgs(projectPath)
     if (authArgs.length > 0) {
-      await git.raw([...authArgs, 'fetch', 'origin', existingBranch])
+      await git.raw([...authArgs, 'fetch', 'origin', refspec])
     } else {
-      await git.fetch(['origin', existingBranch])
+      await git.fetch(['origin', refspec])
     }
 
     // -B resets local branch to match remote; creates worktree in one step
