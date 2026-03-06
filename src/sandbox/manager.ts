@@ -179,7 +179,7 @@ export class SandboxManager {
       taskId,
       branchName: existingBranch,
       worktreePath,
-      baseBranch: existingBranch,
+      baseBranch: `origin/${existingBranch}`,
       projectPath,
       submodules,
       isExistingBranch: true,
