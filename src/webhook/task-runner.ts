@@ -271,6 +271,7 @@ export class TaskRunner {
           prBranch: prContext.prBranch,
           diff: prContext.diff,
           discussion: prContext.discussion,
+          reviewComments: prContext.reviewComments,
           language: metadata?.language as string | undefined,
         })
       } else {
@@ -496,6 +497,7 @@ export class TaskRunner {
         prBranch: string
         diff: string
         discussion?: import('../review/prompt.js').PRDiscussionContext
+        reviewComments?: Array<{ path: string; line: number | null; body: string; user: string }>
       }
     | undefined
   > {
@@ -511,13 +513,11 @@ export class TaskRunner {
       return undefined
     }
 
-    const diff = await this.githubClient.getPRDiff(repoInfo.owner, repoInfo.repo, prNumber, host)
-    const discussion = await this.githubClient.getPRConversation(
-      repoInfo.owner,
-      repoInfo.repo,
-      prNumber,
-      host,
-    )
+    const [diff, discussion, reviewComments] = await Promise.all([
+      this.githubClient.getPRDiff(repoInfo.owner, repoInfo.repo, prNumber, host),
+      this.githubClient.getPRConversation(repoInfo.owner, repoInfo.repo, prNumber, host),
+      this.githubClient.listReviewComments(repoInfo.owner, repoInfo.repo, prNumber, host),
+    ])
 
     return {
       owner: repoInfo.owner,
@@ -526,6 +526,7 @@ export class TaskRunner {
       prBranch: pr.head,
       diff: diff || '',
       discussion,
+      reviewComments,
     }
   }
 

@@ -148,6 +148,9 @@ export class SandboxManager {
       await this.forceRemoveWorktree(git, worktreePath)
     }
 
+    // Remove any other worktree that has this branch checked out
+    await this.removeWorktreeForBranch(git, existingBranch)
+
     log.info('Creating sandbox on existing branch', { taskId, existingBranch, worktreePath })
 
     // Explicit refspec so that origin/<branch> tracking ref is created
@@ -382,6 +385,39 @@ export class SandboxManager {
       return log.total > 0
     } catch {
       return false
+    }
+  }
+
+  /**
+   * Find and remove any existing worktree that has `branch` checked out.
+   * Prevents "branch is already used by worktree" errors.
+   */
+  private async removeWorktreeForBranch(
+    git: ReturnType<typeof simpleGit>,
+    branch: string,
+  ): Promise<void> {
+    try {
+      await git.raw(['worktree', 'prune'])
+      const list = await git.raw(['worktree', 'list', '--porcelain'])
+      let currentPath: string | undefined
+      for (const line of list.split('\n')) {
+        if (line.startsWith('worktree ')) {
+          currentPath = line.slice('worktree '.length).trim()
+        }
+        if (line.startsWith('branch refs/heads/') && currentPath) {
+          const branchName = line.slice('branch refs/heads/'.length).trim()
+          if (branchName === branch) {
+            log.warn('Removing stale worktree that has branch checked out', {
+              branch,
+              worktreePath: currentPath,
+            })
+            await this.forceRemoveWorktree(git, currentPath)
+            return
+          }
+        }
+      }
+    } catch {
+      // best effort — prune may handle it
     }
   }
 

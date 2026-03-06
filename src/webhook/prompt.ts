@@ -523,6 +523,7 @@ export function buildPRModifyPrompt(params: {
   prBranch: string
   diff: string
   discussion?: PRDiscussionContext
+  reviewComments?: Array<{ path: string; line: number | null; body: string; user: string }>
   language?: string
   attachments?: Array<{ filename: string; originalname: string; path: string; mimetype?: string }>
 }): string {
@@ -547,10 +548,24 @@ export function buildPRModifyPrompt(params: {
     parts.push('', '### Current PR Diff', '', '```diff', truncated, '```')
   }
 
+  // Inline code review comments — the most actionable feedback
+  if (params.reviewComments && params.reviewComments.length > 0) {
+    parts.push('', '### Code Review Comments (inline feedback on specific lines)', '')
+    for (const c of params.reviewComments.slice(0, 30)) {
+      const loc = c.line ? `${c.path}:${c.line}` : c.path
+      parts.push(`- **[${c.user}]** \`${loc}\`: ${c.body.slice(0, 800)}`)
+    }
+    parts.push(
+      '',
+      '**IMPORTANT**: These inline review comments are the primary feedback to address.',
+      'Fix each comment by modifying the corresponding file and line.',
+    )
+  }
+
   if (params.discussion) {
     const { issueComments, reviewSummaries } = params.discussion
     if (issueComments.length > 0 || reviewSummaries.length > 0) {
-      parts.push('', '### PR Discussion (review comments and conversations)', '')
+      parts.push('', '### PR Discussion (general comments and review summaries)', '')
       for (const r of reviewSummaries.slice(0, 10)) {
         parts.push(`- [${r.user}] (review: ${r.state}) ${r.body.slice(0, 500)}`)
       }
@@ -574,8 +589,8 @@ export function buildPRModifyPrompt(params: {
     '### Instructions',
     '',
     '- You are working on an EXISTING PR branch — apply the requested modifications',
-    '- Read the current PR diff and discussion to understand what has already been done',
-    '- Make only the changes described in the modification instructions',
+    '- Read the current PR diff and inline review comments to understand what needs to be fixed',
+    '- Address each inline review comment by modifying the corresponding code',
     '- After making changes, run type checks and lint checks to verify',
     '- Commit with a descriptive message summarizing what was changed',
     '- You MUST call `submit_summary` at the end',
