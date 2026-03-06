@@ -95,6 +95,9 @@ export class ApprovalPoller {
 
     this.deps.approvalStore.cleanup(this.expiryDays)
 
+    // Sync workspace repos so manifest/context stay up-to-date
+    await this.syncWorkspaces()
+
     // Path A: bot-created issues from pending_approvals
     await this.pollPendingApprovals()
 
@@ -845,6 +848,30 @@ export class ApprovalPoller {
   /* ================================================================== */
   /*  Path C: Workspace issues (scan workspace repos)                    */
   /* ================================================================== */
+
+  private async syncWorkspaces(): Promise<void> {
+    try {
+      const resolver = await this.deps.getProjectResolver()
+      if (!resolver) return
+
+      const allWs = resolver.getAllWorkspaceInfos()
+      for (const ws of allWs) {
+        try {
+          await resolver.syncWorkspace(ws.record.id)
+          log.debug('Workspace synced', { id: ws.record.id })
+        } catch (err) {
+          log.warn('Workspace sync failed', {
+            id: ws.record.id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+    } catch (err) {
+      log.warn('Workspace sync skipped', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
 
   private async scanWorkspaceIssues(): Promise<void> {
     const resolver = await this.deps.getProjectResolver()
