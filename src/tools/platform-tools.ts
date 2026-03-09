@@ -2,7 +2,8 @@
  * Platform tools — issue and PR operations for the dispatcher.
  *
  * Read tools: list_issues, get_issue, list_prs, get_pr
- * Write tools: edit_issue, comment_issue
+ * Write tools: create_issue, edit_issue, comment_issue, assign_issue,
+ *              add_labels, remove_labels, comment_pr, close_pr
  *
  * Each tool resolves the project's owner/repo from context.projectPath
  * via detectRepo, then delegates to the GitHubClient.
@@ -56,12 +57,45 @@ const commentIssueSchema = z.object({
   body: z.string().describe('Comment text'),
 })
 
+const assignIssueSchema = z.object({
+  issue_number: z.number().describe('Issue number'),
+  assignees: z
+    .array(z.string())
+    .describe('GitHub usernames to assign (must be repo collaborators)'),
+})
+
+const createIssueSchema = z.object({
+  title: z.string().describe('Issue title'),
+  body: z.string().optional().describe('Issue body (markdown)'),
+  labels: z.array(z.string()).optional().describe('Labels to add'),
+})
+
+const addLabelsSchema = z.object({
+  issue_number: z.number().describe('Issue or PR number'),
+  labels: z.array(z.string()).describe('Labels to add'),
+})
+
+const removeLabelsSchema = z.object({
+  issue_number: z.number().describe('Issue or PR number'),
+  labels: z.array(z.string()).describe('Labels to remove'),
+})
+
 const listPrsSchema = z.object({
   state: z.enum(['open', 'closed', 'all']).optional().describe('PR state filter (default: open)'),
 })
 
 const getPrSchema = z.object({
   pr_number: z.number().describe('Pull request number'),
+})
+
+const commentPrSchema = z.object({
+  pr_number: z.number().describe('Pull request number'),
+  body: z.string().describe('Comment text'),
+})
+
+const closePrSchema = z.object({
+  pr_number: z.number().describe('Pull request number'),
+  reopen: z.boolean().optional().describe('Set to true to reopen instead of close'),
 })
 
 // ============ Tools ============
@@ -155,6 +189,99 @@ const commentIssueTool = defineTool({
   },
 })
 
+const assignIssueTool = defineTool({
+  name: 'assign_issue',
+  category: 'platform-write',
+  description: 'Assign users to an issue. Assignees must be repository collaborators.',
+  schema: assignIssueSchema,
+  async execute(args, context) {
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const ok = await client.addAssignees(owner, repo, args.issue_number, args.assignees, host)
+    if (!ok) {
+      return `Failed to assign issue #${args.issue_number}. Ensure the users are repo collaborators.`
+    }
+    return `Issue #${args.issue_number} assigned to: ${args.assignees.join(', ')}`
+  },
+})
+
+const createIssueTool = defineTool({
+  name: 'create_issue',
+  category: 'platform-write',
+  description: 'Create a new issue in the repository',
+  schema: createIssueSchema,
+  async execute(args, context) {
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const result = await client.createIssue(
+      owner,
+      repo,
+      { title: args.title, body: args.body || '', labels: args.labels },
+      host,
+    )
+    if (!result) return 'Failed to create issue'
+    return `Issue #${result.number} created: ${result.url}`
+  },
+})
+
+const addLabelsTool = defineTool({
+  name: 'add_labels',
+  category: 'platform-write',
+  description: 'Add labels to an issue or pull request',
+  schema: addLabelsSchema,
+  async execute(args, context) {
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const ok = await client.addLabels(owner, repo, args.issue_number, args.labels, host)
+    if (!ok) return `Failed to add labels to #${args.issue_number}`
+    return `Labels added to #${args.issue_number}: ${args.labels.join(', ')}`
+  },
+})
+
+const removeLabelsTool = defineTool({
+  name: 'remove_labels',
+  category: 'platform-write',
+  description: 'Remove labels from an issue or pull request',
+  schema: removeLabelsSchema,
+  async execute(args, context) {
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const failed: string[] = []
+    for (const label of args.labels) {
+      const ok = await client.removeLabel(owner, repo, args.issue_number, label, host)
+      if (!ok) failed.push(label)
+    }
+    if (failed.length === args.labels.length)
+      return `Failed to remove labels from #${args.issue_number}`
+    if (failed.length > 0)
+      return `Labels removed from #${args.issue_number}, but failed: ${failed.join(', ')}`
+    return `Labels removed from #${args.issue_number}: ${args.labels.join(', ')}`
+  },
+})
+
+const commentPrTool = defineTool({
+  name: 'comment_pr',
+  category: 'platform-write',
+  description: 'Add a comment to a pull request',
+  schema: commentPrSchema,
+  async execute(args, context) {
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const ok = await client.createIssueComment(owner, repo, args.pr_number, args.body, host)
+    if (!ok) return `Failed to comment on PR #${args.pr_number}`
+    return `Comment added to PR #${args.pr_number}`
+  },
+})
+
+const closePrTool = defineTool({
+  name: 'close_pr',
+  category: 'platform-write',
+  description: 'Close (or reopen) a pull request',
+  schema: closePrSchema,
+  async execute(args, context) {
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const state = args.reopen ? 'open' : 'closed'
+    const ok = await client.updatePR(owner, repo, args.pr_number, { state }, host)
+    if (!ok) return `Failed to ${args.reopen ? 'reopen' : 'close'} PR #${args.pr_number}`
+    return `PR #${args.pr_number} ${args.reopen ? 'reopened' : 'closed'}`
+  },
+})
+
 const listPrsTool = defineTool({
   name: 'list_prs',
   category: 'platform-read',
@@ -204,8 +331,14 @@ const getPrTool = defineTool({
 export const platformTools: Tool[] = [
   listIssuesTool,
   getIssueTool,
+  createIssueTool,
   editIssueTool,
   commentIssueTool,
+  assignIssueTool,
+  addLabelsTool,
+  removeLabelsTool,
   listPrsTool,
   getPrTool,
+  commentPrTool,
+  closePrTool,
 ]

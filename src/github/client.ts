@@ -349,6 +349,107 @@ export class GitHubClient {
     )
   }
 
+  /** Add assignees to an issue. Users must be repo collaborators. */
+  async addAssignees(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    assignees: string[],
+    host = 'github.com',
+  ): Promise<boolean> {
+    if (assignees.length === 0) return true
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const result = await this.apiPost(
+      `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/assignees`,
+      token,
+      { assignees },
+      () => ({}),
+      'addAssignees',
+    )
+    return result !== undefined
+  }
+
+  /** Add labels to an issue or PR. */
+  async addLabels(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    labels: string[],
+    host = 'github.com',
+  ): Promise<boolean> {
+    if (labels.length === 0) return true
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const result = await this.apiPost(
+      `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
+      token,
+      { labels },
+      () => ({}),
+      'addLabels',
+    )
+    return result !== undefined
+  }
+
+  /** Remove a label from an issue or PR. */
+  async removeLabel(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    label: string,
+    host = 'github.com',
+  ): Promise<boolean> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    try {
+      const resp = await fetch(
+        `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        },
+      )
+      if (!resp.ok) {
+        log.error('removeLabel failed', { status: resp.status })
+        return false
+      }
+      return true
+    } catch (err) {
+      log.error('removeLabel error', { error: err instanceof Error ? err.message : String(err) })
+      return false
+    }
+  }
+
+  /** Update a PR's state (open/closed). */
+  async updatePR(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    opts: { state?: 'open' | 'closed' },
+    host = 'github.com',
+  ): Promise<boolean> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return false
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    return this.apiPatch(
+      `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`,
+      token,
+      opts,
+      'updatePR',
+    )
+  }
+
   /** List pull requests with optional state filter. */
   async listPRs(
     owner: string,
