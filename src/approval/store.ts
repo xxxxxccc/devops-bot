@@ -67,6 +67,23 @@ CREATE TABLE IF NOT EXISTS processed_issues (
 );
 `
 
+const LIFECYCLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS lifecycle_watches (
+  id              TEXT PRIMARY KEY,
+  repo_key        TEXT NOT NULL,
+  resource_type   TEXT NOT NULL,
+  resource_number INTEGER NOT NULL,
+  last_state      TEXT NOT NULL,
+  im_chat_id      TEXT NOT NULL,
+  im_message_id   TEXT,
+  title           TEXT,
+  created_at      TEXT NOT NULL,
+  notified_at     TEXT,
+  expired         INTEGER DEFAULT 0,
+  UNIQUE(repo_key, resource_type, resource_number)
+);
+`
+
 const MIGRATION_SQL = `
 ALTER TABLE processed_issues ADD COLUMN status TEXT NOT NULL DEFAULT 'processed';
 ALTER TABLE processed_issues ADD COLUMN issue_updated_at TEXT;
@@ -81,6 +98,7 @@ export class ApprovalStore {
 
   init(): void {
     this.db.exec(SCHEMA_SQL)
+    this.db.exec(LIFECYCLE_SCHEMA_SQL)
     this.runMigrations()
     log.info('Approval store table initialized')
   }
@@ -215,6 +233,76 @@ export class ApprovalStore {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Lifecycle watches                                                */
+  /* ---------------------------------------------------------------- */
+
+  addWatch(data: {
+    repoKey: string
+    resourceType: 'issue' | 'pr'
+    resourceNumber: number
+    lastState: string
+    imChatId: string
+    imMessageId?: string | null
+    title?: string
+  }): void {
+    const id = `watch-${randomUUID().slice(0, 8)}`
+    this.db
+      .prepare(
+        `INSERT INTO lifecycle_watches
+         (id, repo_key, resource_type, resource_number, last_state,
+          im_chat_id, im_message_id, title, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repo_key, resource_type, resource_number) DO UPDATE SET
+           im_chat_id = excluded.im_chat_id,
+           im_message_id = excluded.im_message_id,
+           title = COALESCE(excluded.title, lifecycle_watches.title)`,
+      )
+      .run(
+        id,
+        data.repoKey,
+        data.resourceType,
+        data.resourceNumber,
+        data.lastState,
+        data.imChatId,
+        data.imMessageId ?? null,
+        data.title ?? null,
+        new Date().toISOString(),
+      )
+  }
+
+  getActiveWatches(): LifecycleWatch[] {
+    const rows = this.db
+      .prepare('SELECT * FROM lifecycle_watches WHERE expired = 0 ORDER BY created_at')
+      .all()
+    return rows.map(toWatch)
+  }
+
+  updateWatchState(id: string, newState: string): void {
+    this.db
+      .prepare('UPDATE lifecycle_watches SET last_state = ?, notified_at = ? WHERE id = ?')
+      .run(newState, new Date().toISOString(), id)
+  }
+
+  expireWatch(id: string): void {
+    this.db
+      .prepare('UPDATE lifecycle_watches SET expired = 1, notified_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), id)
+  }
+
+  /** Expire watches older than the given number of days. */
+  expireStaleWatches(maxAgeDays: number): number {
+    const cutoff = new Date(Date.now() - maxAgeDays * 86_400_000).toISOString()
+    const result = this.db
+      .prepare('UPDATE lifecycle_watches SET expired = 1 WHERE expired = 0 AND created_at < ?')
+      .run(cutoff)
+    const count = result.changes as number
+    if (count > 0) {
+      log.info(`Expired ${count} stale lifecycle watches older than ${maxAgeDays} days`)
+    }
+    return count
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Cleanup                                                          */
   /* ---------------------------------------------------------------- */
 
@@ -231,6 +319,36 @@ export class ApprovalStore {
       log.info(`Expired ${count} stale approvals older than ${maxAgeDays} days`)
     }
     return count
+  }
+}
+
+export interface LifecycleWatch {
+  id: string
+  repoKey: string
+  resourceType: 'issue' | 'pr'
+  resourceNumber: number
+  lastState: string
+  imChatId: string
+  imMessageId: string | null
+  title: string | null
+  createdAt: string
+  notifiedAt: string | null
+  expired: boolean
+}
+
+function toWatch(row: any): LifecycleWatch {
+  return {
+    id: row.id,
+    repoKey: row.repo_key,
+    resourceType: row.resource_type,
+    resourceNumber: row.resource_number,
+    lastState: row.last_state,
+    imChatId: row.im_chat_id,
+    imMessageId: row.im_message_id,
+    title: row.title,
+    createdAt: row.created_at,
+    notifiedAt: row.notified_at,
+    expired: row.expired === 1,
   }
 }
 

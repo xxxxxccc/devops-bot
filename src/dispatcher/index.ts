@@ -570,6 +570,13 @@ export class Dispatcher {
       issueCard = `📝 Issue: ${createdIssue.url}${riskLine}\n\n${response.reply || 'React with ✅ on the Issue to approve execution.'}`
       issueHeader = { title: `📋 Pending Approval: ${response.taskTitle}`, color: 'orange' }
 
+      await this.writeIssueWatch(
+        projectPath,
+        createdIssue.number,
+        msg.chatId,
+        msg.messageId,
+        response.taskTitle!,
+      )
       await this.persistApproval(createdIssue, {
         projectPath,
         taskTitle: response.taskTitle!,
@@ -663,6 +670,34 @@ export class Dispatcher {
     }
   }
 
+  /** Write a lifecycle watch for a bot-created issue so we can notify IM when it closes. */
+  private async writeIssueWatch(
+    projectPath: string,
+    issueNumber: number,
+    chatId: string,
+    messageId: string,
+    title: string,
+  ): Promise<void> {
+    if (!this.approvalStore) return
+    try {
+      const repoInfo = await detectRepo(projectPath)
+      if (!repoInfo.owner || !repoInfo.repo) return
+      this.approvalStore.addWatch({
+        repoKey: `${repoInfo.owner}/${repoInfo.repo}`,
+        resourceType: 'issue',
+        resourceNumber: issueNumber,
+        lastState: 'open',
+        imChatId: chatId,
+        imMessageId: messageId,
+        title,
+      })
+    } catch (err) {
+      log.warn('Failed to write issue lifecycle watch', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Tier 3: create_issue (high risk, discussion only)                */
   /* ---------------------------------------------------------------- */
@@ -721,6 +756,16 @@ export class Dispatcher {
       body: issueBodyParts.join('\n'),
       labels: response.issueLabels ?? ['devops-bot'],
     })
+
+    if (createdIssue) {
+      await this.writeIssueWatch(
+        projectPath,
+        createdIssue.number,
+        msg.chatId,
+        msg.messageId,
+        response.taskTitle!,
+      )
+    }
 
     let issueCard: string
     let issueHeader: { title: string; color: string }

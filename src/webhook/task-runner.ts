@@ -73,6 +73,8 @@ export class TaskRunner {
   private imPlatform: import('../channels/types.js').IMPlatform | null = null
   // GitHub client for posting issue comments on completion/failure
   private githubClient: GitHubClient | null = null
+  // Approval store for lifecycle watches
+  private approvalStore: import('../approval/store.js').ApprovalStore | null = null
   // Memory extractor (lazy init)
   private memoryExtractor: MemoryExtractor | null = null
   // Project scanner for reading project rules
@@ -113,6 +115,10 @@ export class TaskRunner {
 
   setGitHubClient(client: GitHubClient): void {
     this.githubClient = client
+  }
+
+  setApprovalStore(store: import('../approval/store.js').ApprovalStore): void {
+    this.approvalStore = store
   }
 
   /* ---------------------------------------------------------------- */
@@ -312,10 +318,11 @@ export class TaskRunner {
         await this.notifyCompletion(updatedTask)
         await this.notifyIssueResult(updatedTask)
 
-        // For PR modifications, construct the prUrl for self-review
+        // Write a lifecycle watch for the PR so IM gets notified when it's merged/closed
         const effectivePrUrl =
           prUrl || (prNumber ? await this.buildPRUrlFromMetadata(prNumber, projectPath) : undefined)
         if (effectivePrUrl) {
+          await this.writePRWatch(updatedTask, effectivePrUrl, projectPath)
           void this.triggerSelfReview(updatedTask, effectivePrUrl, projectPath)
         }
       }
@@ -578,6 +585,35 @@ export class TaskRunner {
     if (!repoInfo.owner || !repoInfo.repo) return undefined
     const host = repoInfo.host || 'github.com'
     return `https://${host}/${repoInfo.owner}/${repoInfo.repo}/pull/${prNumber}`
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Lifecycle watch for PRs                                          */
+  /* ---------------------------------------------------------------- */
+
+  private async writePRWatch(task: Task, prUrl: string, _projectPath: string): Promise<void> {
+    const chatId = task.metadata?.imChatId as string | undefined
+    if (!chatId || !this.approvalStore) return
+
+    const parsed = parsePRUrl(prUrl)
+    if (!parsed) return
+
+    try {
+      this.approvalStore.addWatch({
+        repoKey: `${parsed.owner}/${parsed.repo}`,
+        resourceType: 'pr',
+        resourceNumber: parsed.prNumber,
+        lastState: 'open',
+        imChatId: chatId,
+        imMessageId: (task.metadata?.imMessageId as string) ?? undefined,
+        title: (task.metadata?.title as string) || task.id,
+      })
+    } catch (err) {
+      log.warn('Failed to write PR lifecycle watch', {
+        prUrl,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   /* ---------------------------------------------------------------- */

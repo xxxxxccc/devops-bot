@@ -108,6 +108,9 @@ export class ApprovalPoller {
     // Path C: workspace issues (scan workspace repos and distribute to sub-projects)
     await this.scanWorkspaceIssues()
 
+    // Lifecycle watches: check if bot-created Issues/PRs changed state → IM notify
+    await this.checkLifecycleWatches()
+
     log.info('Poll cycle completed')
   }
 
@@ -728,6 +731,18 @@ export class ApprovalPoller {
             targetRepo: `${targetRepoInfo.owner}/${targetRepoInfo.repo}`,
             subIssueNumber: subIssue.number,
           })
+
+          if (meta.imChatId) {
+            this.deps.approvalStore.addWatch({
+              repoKey: `${targetRepoInfo.owner}/${targetRepoInfo.repo}`,
+              resourceType: 'issue',
+              resourceNumber: subIssue.number,
+              lastState: 'open',
+              imChatId: meta.imChatId,
+              imMessageId: meta.imMessageId ?? undefined,
+              title: synthesized.title,
+            })
+          }
         }
       }
 
@@ -975,6 +990,111 @@ export class ApprovalPoller {
         },
       )
     }
+  }
+
+  /* ================================================================== */
+  /*  Lifecycle watches — notify IM when Issue/PR state changes          */
+  /* ================================================================== */
+
+  private async checkLifecycleWatches(): Promise<void> {
+    const watches = this.deps.approvalStore.getActiveWatches()
+    if (watches.length === 0) return
+
+    // Auto-expire stale watches older than 30 days
+    this.deps.approvalStore.expireStaleWatches(30)
+
+    log.debug(`Checking ${watches.length} lifecycle watch(es)`)
+
+    for (const watch of watches) {
+      try {
+        await this.checkOneWatch(watch)
+      } catch (err) {
+        log.warn('Lifecycle watch check failed', {
+          id: watch.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+  }
+
+  private async checkOneWatch(watch: import('./store.js').LifecycleWatch): Promise<void> {
+    const [owner, repo] = watch.repoKey.split('/')
+    if (!owner || !repo) return
+
+    const host = 'github.com'
+    let currentState: string | undefined
+
+    if (watch.resourceType === 'issue') {
+      currentState = await this.deps.githubClient.getIssueState(
+        owner,
+        repo,
+        watch.resourceNumber,
+        host,
+      )
+    } else {
+      currentState = await this.deps.githubClient.getPRState(
+        owner,
+        repo,
+        watch.resourceNumber,
+        host,
+      )
+    }
+
+    if (!currentState) return
+
+    if (currentState === watch.lastState) return
+
+    // State changed — send IM notification and expire the watch
+    const label = watch.resourceType === 'pr' ? 'PR' : 'Issue'
+    const stateEmoji = currentState === 'merged' ? '🟣' : currentState === 'closed' ? '🔴' : '🟢'
+    const stateLabel =
+      currentState === 'merged' ? '已合并' : currentState === 'closed' ? '已关闭' : '已重新打开'
+    const resourceUrl =
+      watch.resourceType === 'pr'
+        ? `https://${host}/${watch.repoKey}/pull/${watch.resourceNumber}`
+        : `https://${host}/${watch.repoKey}/issues/${watch.resourceNumber}`
+
+    const cardMarkdown = [
+      `${stateEmoji} **${label} #${watch.resourceNumber}** ${stateLabel}`,
+      watch.title ? `**Task:** ${watch.title}` : '',
+      `🔗 ${resourceUrl}`,
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+    const header = {
+      title: `${label} #${watch.resourceNumber} ${stateLabel}`,
+      color: currentState === 'merged' ? 'purple' : currentState === 'closed' ? 'red' : 'green',
+    }
+
+    if (this.deps.imPlatform) {
+      try {
+        await this.deps.imPlatform.sendCard(
+          watch.imChatId,
+          { markdown: cardMarkdown, header },
+          watch.imMessageId ? { replyTo: watch.imMessageId } : undefined,
+        )
+      } catch (err) {
+        log.warn('Failed to send lifecycle IM notification', {
+          watchId: watch.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    this.deps.approvalStore.updateWatchState(watch.id, currentState)
+
+    // Terminal states → expire so we stop polling
+    if (currentState === 'closed' || currentState === 'merged') {
+      this.deps.approvalStore.expireWatch(watch.id)
+    }
+
+    log.info('Lifecycle state change detected', {
+      watchId: watch.id,
+      resource: `${watch.resourceType} #${watch.resourceNumber}`,
+      from: watch.lastState,
+      to: currentState,
+    })
   }
 
   /* ================================================================== */

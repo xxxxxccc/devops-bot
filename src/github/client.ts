@@ -579,6 +579,46 @@ export class GitHubClient {
     }
   }
 
+  /** Lightweight issue state check — returns 'open' or 'closed'. */
+  async getIssueState(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    host = 'github.com',
+  ): Promise<string | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const data = await this.apiGet<{ state: string }>(
+      `${apiBase}/repos/${owner}/${repo}/issues/${issueNumber}`,
+      token,
+      'getIssueState',
+    )
+    return data?.state
+  }
+
+  /** Lightweight PR state check — returns 'open', 'closed', or 'merged'. */
+  async getPRState(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    host = 'github.com',
+  ): Promise<string | undefined> {
+    const token = await this.getToken(owner, repo)
+    if (!token) return undefined
+
+    const apiBase = host === 'github.com' ? 'https://api.github.com' : `https://${host}/api/v3`
+    const data = await this.apiGet<{ state: string; merged: boolean }>(
+      `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}`,
+      token,
+      'getPRState',
+    )
+    if (!data) return undefined
+    if (data.merged) return 'merged'
+    return data.state
+  }
+
   /** Get files changed in a pull request (includes patch content). */
   async getPRFiles(
     owner: string,
