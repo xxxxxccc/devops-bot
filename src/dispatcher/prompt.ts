@@ -640,16 +640,12 @@ export function buildEnrichedTaskDescription(
     }
   }
 
-  // Append attachments — publicUrl for Issue/PR markdown, local path for Task AI MCP access
+  // Append attachments — publicUrl as clickable link in Issue/PR, local path for Task AI MCP access
   if (attachments.length > 0) {
     parts.push('\n## Attached Files')
     for (const att of attachments) {
       if (att.publicUrl) {
-        const isImage = att.mimetype.startsWith('image/')
-        const mdLink = isImage
-          ? `![${att.originalname}](${att.publicUrl})`
-          : `[${att.originalname}](${att.publicUrl})`
-        parts.push(`${mdLink}`)
+        parts.push(`- [${att.originalname}](${att.publicUrl})`)
         parts.push(`  Local path: \`${att.path}\``)
       } else {
         parts.push(`- ${att.originalname}: ${att.path}`)

@@ -41,8 +41,8 @@ export class GitHubRepoUploader extends BaseUploader {
     return this.host === 'github.com' ? 'https://api.github.com' : `https://${this.host}/api/v3`
   }
 
-  private rawUrl(filePath: string): string {
-    return `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${filePath}`
+  private blobUrl(filePath: string): string {
+    return `https://github.com/${this.owner}/${this.repo}/blob/${this.branch}/${filePath}`
   }
 
   private async getToken(): Promise<string | undefined> {
@@ -133,7 +133,7 @@ export class GitHubRepoUploader extends BaseUploader {
         commit: newCommitSha.slice(0, 8),
       })
 
-      return storagePaths.map((p) => (p ? this.rawUrl(p) : undefined))
+      return storagePaths.map((p) => (p ? this.blobUrl(p) : undefined))
     } catch (err) {
       log.error('Batch upload failed', {
         error: err instanceof Error ? err.message : String(err),
