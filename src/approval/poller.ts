@@ -33,6 +33,7 @@ import {
 } from './issue-ai.js'
 import type { ProjectRegistry, ProjectRecord } from '../project/registry.js'
 import type { ProjectResolver } from '../project/resolver.js'
+import { extractAndDownloadImages } from '../attachment/downloader.js'
 
 const log = createLogger('approval-poller')
 
@@ -492,6 +493,27 @@ export class ApprovalPoller {
 
     if (this.deps.approvalStore.isIssueProcessed(repoKey, ctx.issueNumber, meta.issueUpdatedAt))
       return
+
+    // Download images from issue body + comments for Task AI local inspection
+    const githubToken = await this.getGitHubToken(ctx.repoOwner, ctx.repoName)
+    const allMarkdown = [ctx.body, ...ctx.comments.map((c) => c.body)].join('\n')
+    const { attachments: dlImages, fallbacks } = await extractAndDownloadImages(
+      allMarkdown,
+      githubToken,
+    )
+    if (dlImages.length > 0 || fallbacks.length > 0) {
+      const imageSection: string[] = ['\n\n## Discussion Attachments']
+      for (const att of dlImages) {
+        imageSection.push(`- ${att.originalname}: ${att.path}`)
+      }
+      for (const fb of fallbacks) {
+        imageSection.push(`- [Image: ${fb.altText}](${fb.url})`)
+        imageSection.push(
+          '  (Note: this image could not be downloaded for local inspection; use the alt-text and surrounding discussion for context)',
+        )
+      }
+      ctx = { ...ctx, body: ctx.body + imageSection.join('\n') }
+    }
 
     // Load workspace context if not already provided (for project issues)
     let wsContext = meta.workspaceContext
@@ -992,6 +1014,14 @@ export class ApprovalPoller {
       })
     }
     return undefined
+  }
+
+  private async getGitHubToken(owner: string, repo: string): Promise<string | undefined> {
+    try {
+      return await this.deps.githubClient.getToken(owner, repo)
+    } catch {
+      return undefined
+    }
   }
 
   /* ================================================================== */

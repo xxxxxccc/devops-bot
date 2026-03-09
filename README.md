@@ -580,6 +580,16 @@ devops-bot/
 │   │   ├── store.ts          # Reviewed PR deduplication
 │   │   ├── poller.ts         # PR polling mechanism
 │   │   └── types.ts          # Review type definitions
+│   ├── attachment/
+│   │   ├── index.ts           # createUploader() factory + uploadAttachments() helper
+│   │   ├── uploader.ts        # AttachmentUploader interface + BaseUploader
+│   │   ├── downloader.ts      # extractAndDownloadImages() from markdown discussions
+│   │   └── providers/
+│   │       ├── github-repo.ts # GitHub repo provider (Git Tree API batch commits)
+│   │       ├── gitlab-uploads.ts # GitLab Project Uploads API
+│   │       ├── s3.ts          # AWS S3 (dynamic import)
+│   │       ├── local.ts       # Local HTTP static files
+│   │       └── custom.ts      # Custom webhook endpoint
 │   ├── github/
 │   │   ├── app-auth.ts       # GitHub App JWT + installation token
 │   │   └── client.ts         # Unified GitHub API client

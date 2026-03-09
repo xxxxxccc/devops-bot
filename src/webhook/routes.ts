@@ -96,6 +96,9 @@ export function setupRoutes(
     return secret === config.secret
   }
 
+  // Static attachments (used by ATTACHMENT_STORAGE=local)
+  app.use('/attachments', express.static(ATTACHMENTS_DIR))
+
   // Health
   app.get('/health', (_req, res) => {
     const stats = runner.store.getStats()

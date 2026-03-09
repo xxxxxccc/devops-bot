@@ -14,6 +14,8 @@ export interface Attachment {
   originalname: string
   path: string
   mimetype: string
+  /** Public URL after uploading to external storage (filled by AttachmentUploader). */
+  publicUrl?: string
 }
 
 export interface ExtractedLink {

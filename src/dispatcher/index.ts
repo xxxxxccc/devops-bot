@@ -33,6 +33,7 @@ import {
   buildEnrichedTaskDescription,
   type WorkspaceContextEntry,
 } from './prompt.js'
+import { uploadAttachments } from '../attachment/index.js'
 
 const log = createLogger('dispatcher')
 
@@ -413,6 +414,8 @@ export class Dispatcher {
       ctx.projectPath,
     )
 
+    await uploadAttachments(msg.attachments, response.projectId)
+
     const enrichedDescription = buildEnrichedTaskDescription(
       response.taskDescription || response.taskTitle,
       msg.attachments,
@@ -530,6 +533,8 @@ export class Dispatcher {
       ctx.chatProjects,
       ctx.projectPath,
     )
+
+    await uploadAttachments(msg.attachments, response.projectId)
 
     const enrichedDescription = buildEnrichedTaskDescription(
       response.taskDescription || response.taskTitle,
@@ -690,6 +695,8 @@ export class Dispatcher {
       ctx.chatProjects,
       ctx.projectPath,
     )
+
+    await uploadAttachments(msg.attachments, response.projectId)
 
     const issueDescription = buildEnrichedTaskDescription(
       response.taskDescription || response.taskTitle,

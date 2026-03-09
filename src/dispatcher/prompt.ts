@@ -640,11 +640,20 @@ export function buildEnrichedTaskDescription(
     }
   }
 
-  // Append attachment paths (Layer 2 can read these files via MCP tools)
+  // Append attachments — publicUrl for Issue/PR markdown, local path for Task AI MCP access
   if (attachments.length > 0) {
     parts.push('\n## Attached Files')
     for (const att of attachments) {
-      parts.push(`- ${att.originalname}: ${att.path}`)
+      if (att.publicUrl) {
+        const isImage = att.mimetype.startsWith('image/')
+        const mdLink = isImage
+          ? `![${att.originalname}](${att.publicUrl})`
+          : `[${att.originalname}](${att.publicUrl})`
+        parts.push(`${mdLink}`)
+        parts.push(`  Local path: \`${att.path}\``)
+      } else {
+        parts.push(`- ${att.originalname}: ${att.path}`)
+      }
     }
   }
 

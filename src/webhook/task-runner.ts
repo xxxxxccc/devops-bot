@@ -40,6 +40,7 @@ import {
   detectFigmaLinks,
 } from './prompt.js'
 import { detectRepo } from '../sandbox/pr-creator.js'
+import { extractAndDownloadImages } from '../attachment/downloader.js'
 
 const log = createLogger('task-runner')
 
@@ -261,10 +262,14 @@ export class TaskRunner {
           projectPath,
         )
 
+        const prDescription = prContext.discussionAttachments
+          ? `${(metadata?.description as string) || ''}\n\n${prContext.discussionAttachments}`
+          : (metadata?.description as string)
+
         prompt = buildPRModifyPrompt({
           taskId,
           title: taskTitle,
-          description: metadata?.description as string,
+          description: prDescription,
           prNumber,
           owner: prContext.owner,
           repo: prContext.repo,
@@ -500,6 +505,7 @@ export class TaskRunner {
         diff: string
         discussion?: import('../review/prompt.js').PRDiscussionContext
         reviewComments?: Array<{ path: string; line: number | null; body: string; user: string }>
+        discussionAttachments?: string
       }
     | undefined
   > {
@@ -521,6 +527,37 @@ export class TaskRunner {
       this.githubClient.listReviewComments(repoInfo.owner, repoInfo.repo, prNumber, host),
     ])
 
+    // Download images from PR discussion for Task AI local inspection
+    let discussionAttachments: string | undefined
+    if (discussion) {
+      const allBodies = [
+        ...discussion.issueComments.map((c: { body: string }) => c.body),
+        ...discussion.reviewSummaries.map((c: { body: string }) => c.body),
+      ]
+        .filter(Boolean)
+        .join('\n')
+      if (allBodies) {
+        const token = await this.githubClient.getToken(repoInfo.owner, repoInfo.repo)
+        const { attachments: dlImages, fallbacks } = await extractAndDownloadImages(
+          allBodies,
+          token,
+        )
+        if (dlImages.length > 0 || fallbacks.length > 0) {
+          const lines: string[] = ['## Discussion Attachments']
+          for (const att of dlImages) {
+            lines.push(`- ${att.originalname}: ${att.path}`)
+          }
+          for (const fb of fallbacks) {
+            lines.push(`- [Image: ${fb.altText}](${fb.url})`)
+            lines.push(
+              '  (Note: this image could not be downloaded for local inspection; use the alt-text and surrounding discussion for context)',
+            )
+          }
+          discussionAttachments = lines.join('\n')
+        }
+      }
+    }
+
     return {
       owner: repoInfo.owner,
       repo: repoInfo.repo,
@@ -529,6 +566,7 @@ export class TaskRunner {
       diff: diff || '',
       discussion,
       reviewComments,
+      discussionAttachments,
     }
   }
 
