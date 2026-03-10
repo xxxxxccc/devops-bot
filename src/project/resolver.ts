@@ -7,6 +7,7 @@
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { runConcurrent } from '../infra/concurrency.js'
 import { createLogger } from '../infra/logger.js'
 import { type ProjectRecord, ProjectRegistry } from './registry.js'
 import { RepoManager, gitUrlToProjectId } from './repo-manager.js'
@@ -398,6 +399,49 @@ export class ProjectResolver {
       results.push({ record: ws, manifest, context })
     }
     return results
+  }
+
+  /**
+   * Sync a project repo if it has already been cloned (by git URL).
+   * No-op if the project is not registered or not cloned yet.
+   */
+  async syncProjectIfCloned(gitUrl: string): Promise<void> {
+    const project = this.registry.getByGitUrl(gitUrl)
+    if (!project) return
+    if (!existsSync(join(project.localPath, '.git'))) return
+
+    await this.repoManager.syncRepo(project.localPath, project.defaultBranch, project.gitUrl)
+    this.registry.updateSyncTime(project.id)
+    log.debug('Project synced', { id: project.id })
+  }
+
+  /**
+   * Sync all registered (non-workspace) projects that are cloned locally.
+   * Runs concurrently (up to 4 parallel git fetches).
+   */
+  async syncAllClonedProjects(): Promise<void> {
+    const projects = this.registry
+      .listAll()
+      .filter((p) => !p.workspaceId && p.gitUrl && existsSync(join(p.localPath, '.git')))
+
+    const tasks = projects.map((p) => async () => {
+      await this.repoManager.syncRepo(p.localPath, p.defaultBranch, p.gitUrl)
+      this.registry.updateSyncTime(p.id)
+      log.debug('Standalone project synced', { id: p.id })
+    })
+
+    const results = await runConcurrent(tasks, 4)
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === 'rejected') {
+        log.warn('Standalone project sync failed', {
+          id: projects[i].id,
+          error:
+            results[i].reason instanceof Error
+              ? (results[i].reason as Error).message
+              : String(results[i].reason),
+        })
+      }
+    }
   }
 
   /** Find which workspace (if any) owns a given git URL for the current chat. */

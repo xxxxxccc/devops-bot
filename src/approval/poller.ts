@@ -20,6 +20,7 @@
  *   - Supports both GitHub and GitLab
  */
 
+import { runConcurrent } from '../infra/concurrency.js'
 import { createLogger } from '../infra/logger.js'
 import type { ApprovalStore, PendingApproval } from './store.js'
 import type { GitHubClient } from '../github/client.js'
@@ -41,6 +42,7 @@ const APPROVAL_REACTIONS = new Set(['+1', 'heart', 'hooray'])
 const GITLAB_APPROVAL_NAMES = new Set(['thumbsup', 'heart'])
 
 const ISSUE_SCAN_LABELS = process.env.ISSUE_SCAN_LABELS || 'devops-bot'
+const SYNC_CONCURRENCY = 4
 
 export interface ApprovalPollerDeps {
   approvalStore: ApprovalStore
@@ -892,17 +894,40 @@ export class ApprovalPoller {
       if (!resolver) return
 
       const allWs = resolver.getAllWorkspaceInfos()
-      for (const ws of allWs) {
-        try {
-          await resolver.syncWorkspace(ws.record.id)
-          log.debug('Workspace synced', { id: ws.record.id })
-        } catch (err) {
+
+      // Phase 1: sync workspace meta-repos (usually few, run concurrently)
+      const wsTasks = allWs.map((ws) => async () => {
+        await resolver.syncWorkspace(ws.record.id)
+        log.debug('Workspace synced', { id: ws.record.id })
+      })
+      const wsResults = await runConcurrent(wsTasks, SYNC_CONCURRENCY)
+      for (let i = 0; i < wsResults.length; i++) {
+        if (wsResults[i].status === 'rejected') {
           log.warn('Workspace sync failed', {
-            id: ws.record.id,
-            error: err instanceof Error ? err.message : String(err),
+            id: allWs[i].record.id,
+            error:
+              wsResults[i].reason instanceof Error
+                ? (wsResults[i].reason as Error).message
+                : String(wsResults[i].reason),
           })
         }
       }
+
+      // Phase 2: sync all cloned sub-projects + standalone projects concurrently
+      const subProjectUrls = new Set<string>()
+      for (const ws of allWs) {
+        for (const p of ws.manifest.projects) {
+          subProjectUrls.add(p.gitUrl)
+        }
+      }
+
+      const projectTasks = [...subProjectUrls].map(
+        (gitUrl) => () => resolver.syncProjectIfCloned(gitUrl),
+      )
+      const standaloneTask = async () => {
+        await resolver.syncAllClonedProjects()
+      }
+      await runConcurrent([...projectTasks, standaloneTask], SYNC_CONCURRENCY)
     } catch (err) {
       log.warn('Workspace sync skipped', {
         error: err instanceof Error ? err.message : String(err),
