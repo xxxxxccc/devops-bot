@@ -727,13 +727,23 @@ export class GitHubClient {
     )
   }
 
-  /** List review comments on a pull request. */
+  /** List review comments on a pull request (with thread info). */
   async listReviewComments(
     owner: string,
     repo: string,
     prNumber: number,
     host = 'github.com',
-  ): Promise<Array<{ id: number; path: string; line: number | null; body: string; user: string }>> {
+  ): Promise<
+    Array<{
+      id: number
+      path: string
+      line: number | null
+      body: string
+      user: string
+      inReplyToId: number | null
+      createdAt: string
+    }>
+  > {
     const token = await this.getToken(owner, repo)
     if (!token) return []
 
@@ -745,6 +755,8 @@ export class GitHubClient {
         line: number | null
         body: string
         user: { login: string } | null
+        in_reply_to_id?: number
+        created_at: string
       }>
     >(
       `${apiBase}/repos/${owner}/${repo}/pulls/${prNumber}/comments?per_page=100`,
@@ -759,6 +771,8 @@ export class GitHubClient {
       line: c.line,
       body: c.body,
       user: c.user?.login ?? 'unknown',
+      inReplyToId: c.in_reply_to_id ?? null,
+      createdAt: c.created_at,
     }))
   }
 

@@ -11,6 +11,7 @@ import type { AIProvider } from '../providers/types.js'
 import type { DiffChunk } from './diff-parser.js'
 import {
   type PRDiscussionContext,
+  type ReviewComment,
   buildReviewSystemPrompt,
   buildReviewUserPrompt,
 } from './prompt.js'
@@ -38,12 +39,13 @@ export async function reviewWithAI(params: {
   chunks: DiffChunk[]
   skippedFiles: string[]
   totalFiles: number
-  existingComments?: Array<{ path: string; line: number | null; body: string }>
+  reviewComments?: ReviewComment[]
   discussion?: PRDiscussionContext
   projectRules?: string
   skillContent?: string
   reviewPatterns?: string
   language?: string
+  userInstructions?: string
 }): Promise<ReviewResult> {
   const provider = await getProvider()
 
@@ -58,8 +60,9 @@ export async function reviewWithAI(params: {
     prTitle: params.prTitle,
     prBody: params.prBody,
     chunks: params.chunks,
-    existingComments: params.existingComments,
+    reviewComments: params.reviewComments,
     discussion: params.discussion,
+    userInstructions: params.userInstructions,
   })
 
   log.info('Calling review AI', {

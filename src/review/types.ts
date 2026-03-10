@@ -14,6 +14,8 @@ export interface ReviewRequest {
   trigger: 'self-review' | 'im-command' | 'poller' | 'webhook'
   /** Output language for review summary and comments (e.g. 'zh-CN', 'en'). */
   language?: string
+  /** User instructions from IM chat (e.g. "focus on security and error handling"). */
+  userInstructions?: string
 }
 
 export interface LineComment {

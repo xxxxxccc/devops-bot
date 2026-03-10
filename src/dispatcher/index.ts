@@ -1062,6 +1062,7 @@ export class Dispatcher {
         imChatId: msg.chatId,
         trigger: 'im-command',
         language: response.language,
+        userInstructions: msg.text,
       })
 
       const pr = await githubClient.getPR(

@@ -111,16 +111,13 @@ export class ReviewEngine {
       chunks: parsed.chunks,
       skippedFiles: parsed.skippedFiles,
       totalFiles: parsed.totalFiles,
-      existingComments: existingComments.map((c) => ({
-        path: c.path,
-        line: c.line,
-        body: c.body,
-      })),
+      reviewComments: existingComments,
       discussion,
       projectRules: projectRules || undefined,
       skillContent: skillContent || undefined,
       reviewPatterns,
       language: request.language,
+      userInstructions: request.userInstructions,
     })
 
     result.prNumber = prNumber
