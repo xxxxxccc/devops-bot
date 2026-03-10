@@ -11,23 +11,30 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { type SimpleGitOptions, simpleGit } from 'simple-git'
+import { simpleGit } from 'simple-git'
 import { createLogger } from '../infra/logger.js'
 
 const log = createLogger('repo-manager')
 
 const DEFAULT_BASE_DIR = join(homedir(), '.devops-bot', 'repos')
 
-const GIT_TIMEOUT = { block: 60_000 }
-const GIT_CLONE_TIMEOUT = { block: 300_000 }
+const GIT_SYNC_TIMEOUT_MS = 60_000
+const GIT_CLONE_TIMEOUT_MS = 300_000
 
-function git(baseDir?: string): ReturnType<typeof simpleGit> {
-  const opts: Partial<SimpleGitOptions> = baseDir ? { baseDir } : {}
-  return simpleGit(opts).timeout(GIT_TIMEOUT)
-}
-
-function gitClone(): ReturnType<typeof simpleGit> {
-  return simpleGit().timeout(GIT_CLONE_TIMEOUT)
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    promise.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(timer)
+        reject(e)
+      },
+    )
+  })
 }
 
 export interface ParsedGitUrl {
@@ -99,21 +106,21 @@ export class RepoManager {
 
     try {
       log.info('Cloning repository', { gitUrl, localPath })
-      const g = gitClone()
+      const g = simpleGit()
       const authHeader = await this.getAuthHeader(gitUrl)
 
-      if (authHeader) {
-        await g.raw([
-          '-c',
-          `http.extraHeader=${authHeader}`,
-          'clone',
-          '--single-branch',
-          gitUrl,
-          localPath,
-        ])
-      } else {
-        await g.clone(gitUrl, localPath, ['--single-branch'])
-      }
+      const cloneOp = authHeader
+        ? g.raw([
+            '-c',
+            `http.extraHeader=${authHeader}`,
+            'clone',
+            '--single-branch',
+            gitUrl,
+            localPath,
+          ])
+        : g.clone(gitUrl, localPath, ['--single-branch'])
+
+      await withTimeout(cloneOp, GIT_CLONE_TIMEOUT_MS, `clone ${gitUrl}`)
 
       log.info('Clone complete', { localPath })
       return localPath
@@ -132,21 +139,29 @@ export class RepoManager {
    */
   async syncRepo(localPath: string, defaultBranch = 'main', gitUrl?: string): Promise<boolean> {
     try {
-      const g = git(localPath)
+      const g = simpleGit(localPath)
       const authHeader = gitUrl ? await this.getAuthHeader(gitUrl) : undefined
 
       if (authHeader) {
-        await g.raw(['-c', `http.extraHeader=${authHeader}`, 'fetch', 'origin', '--prune'])
+        await withTimeout(
+          g.raw(['-c', `http.extraHeader=${authHeader}`, 'fetch', 'origin', '--prune']),
+          GIT_SYNC_TIMEOUT_MS,
+          `fetch ${localPath}`,
+        )
       } else {
-        await g.fetch(['origin', '--prune'])
+        await withTimeout(g.fetch(['origin', '--prune']), GIT_SYNC_TIMEOUT_MS, `fetch ${localPath}`)
       }
 
       await g.reset(['--hard', `origin/${defaultBranch}`])
 
       try {
-        await g.raw(['submodule', 'update', '--init', '--recursive'])
+        await withTimeout(
+          g.raw(['submodule', 'update', '--init', '--recursive']),
+          GIT_SYNC_TIMEOUT_MS,
+          `submodule update ${localPath}`,
+        )
       } catch {
-        // No submodules or update failed — not fatal for the main repo sync
+        // No submodules or update failed / timed out — not fatal
       }
 
       log.info('Repository synced', { localPath, branch: defaultBranch })
@@ -165,7 +180,7 @@ export class RepoManager {
    */
   async detectDefaultBranch(localPath: string): Promise<string> {
     try {
-      const g = git(localPath)
+      const g = simpleGit(localPath)
       const remote = await g.raw(['remote', 'show', 'origin'])
       const match = remote.match(/HEAD branch:\s*(.+)/)
       return match?.[1]?.trim() || 'main'
