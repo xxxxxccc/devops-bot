@@ -14,7 +14,18 @@ import { type Tool, defineTool } from '../core/types.js'
 
 // ============ Helpers ============
 
-async function resolveRepo(projectPath: string) {
+async function resolveRepo(projectPath: string, repoOverride?: string) {
+  if (repoOverride) {
+    const match = repoOverride.match(/([^/]+)\/([^/]+)$/)
+    if (match) {
+      const { getGitHubClient } = await import('../github/client.js')
+      const client = await getGitHubClient()
+      if (!client.isAvailable) {
+        throw new Error('GitHub authentication is not configured')
+      }
+      return { client, owner: match[1], repo: match[2], host: 'github.com' }
+    }
+  }
   const { detectRepo } = await import('../sandbox/pr-creator.js')
   const info = await detectRepo(projectPath)
   if (info.platform === 'unknown') {
@@ -33,7 +44,13 @@ async function resolveRepo(projectPath: string) {
 
 // ============ Schemas ============
 
+const repoParam = z
+  .string()
+  .optional()
+  .describe('Target repo as "owner/repo" (e.g. "FiloAI/filo-desktop"). Omit to use default project.')
+
 const listIssuesSchema = z.object({
+  repo: repoParam,
   state: z
     .enum(['open', 'closed', 'all'])
     .optional()
@@ -42,6 +59,7 @@ const listIssuesSchema = z.object({
 })
 
 const getIssueSchema = z.object({
+  repo: repoParam,
   issue_number: z.number().describe('Issue number'),
 })
 
@@ -81,10 +99,12 @@ const removeLabelsSchema = z.object({
 })
 
 const listPrsSchema = z.object({
+  repo: repoParam,
   state: z.enum(['open', 'closed', 'all']).optional().describe('PR state filter (default: open)'),
 })
 
 const getPrSchema = z.object({
+  repo: repoParam,
   pr_number: z.number().describe('Pull request number'),
 })
 
@@ -106,7 +126,7 @@ const listIssuesTool = defineTool({
   description: 'List repository issues with optional state and label filters',
   schema: listIssuesSchema,
   async execute(args, context) {
-    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath, args.repo)
     const issues = await client.listIssues(
       owner,
       repo,
@@ -129,7 +149,7 @@ const getIssueTool = defineTool({
   description: 'Get issue details including body and comments',
   schema: getIssueSchema,
   async execute(args, context) {
-    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath, args.repo)
     const result = await client.getIssueWithComments(owner, repo, args.issue_number, host)
     if (!result) return 'Failed to fetch issue'
     if ('notFound' in result && result.notFound) return `Issue #${args.issue_number} not found`
@@ -288,7 +308,7 @@ const listPrsTool = defineTool({
   description: 'List repository pull requests with optional state filter',
   schema: listPrsSchema,
   async execute(args, context) {
-    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath, args.repo)
     const prs = await client.listPRs(owner, repo, { state: args.state }, host)
     if (prs.length === 0) return 'No pull requests found'
     return prs
@@ -306,7 +326,7 @@ const getPrTool = defineTool({
   description: 'Get detailed info about a pull request (status, files changed, diff stats)',
   schema: getPrSchema,
   async execute(args, context) {
-    const { client, owner, repo, host } = await resolveRepo(context.projectPath)
+    const { client, owner, repo, host } = await resolveRepo(context.projectPath, args.repo)
     const pr = await client.getPR(owner, repo, args.pr_number, host)
     if (!pr) return `PR #${args.pr_number} not found or failed to fetch`
 

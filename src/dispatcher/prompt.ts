@@ -499,7 +499,11 @@ export function buildDispatcherPrompt(
   // 4b. Workspace context (workspace mode)
   if (hasWorkspaces) {
     for (const ws of opts.workspaces!) {
-      parts.push(`\n## Workspace: ${ws.id}`)
+      const wsRepo = ws.id.replace(/^github\.com\//, '')
+      parts.push(`\n## Workspace: ${ws.id} (repo: ${wsRepo})`)
+      parts.push(
+        `To query this workspace repo's issues/PRs, use the \`repo\` parameter: \`"repo": "${wsRepo}"\``,
+      )
 
       if (ws.projects.length > 0) {
         parts.push('\n### Available Sub-Projects')
