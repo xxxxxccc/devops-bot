@@ -38,6 +38,7 @@ export interface DispatcherResponse {
     | 'remove_project'
     | 'review_pr'
     | 'add_workspace'
+    | 'remove_workspace'
   reply?: string
   projectId?: string
   taskTitle?: string
@@ -500,7 +501,7 @@ export function extractJSON(text: string): DispatcherResponse | null {
 
   if (text.includes('"intent"')) {
     const intentMatch = text.match(
-      /"intent"\s*:\s*"(chat|query_memory|execute_task|propose_task|create_issue|add_project|remove_project|review_pr|add_workspace)"/,
+      /"intent"\s*:\s*"(chat|query_memory|execute_task|propose_task|create_issue|add_project|remove_project|review_pr|add_workspace|remove_workspace)"/,
     )
     if (intentMatch) {
       const intent = intentMatch[1] as DispatcherResponse['intent']

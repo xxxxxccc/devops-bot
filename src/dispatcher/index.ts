@@ -378,6 +378,11 @@ export class Dispatcher {
         await this.handleAddWorkspace(response, msg, ctx)
         break
       }
+
+      case 'remove_workspace': {
+        await this.handleRemoveWorkspace(response, msg, ctx)
+        break
+      }
     }
   }
 
@@ -981,6 +986,61 @@ export class Dispatcher {
       {
         role: 'assistant',
         content: `Added workspace: ${wsInfo.record.id} (${wsInfo.manifest.projects.length} sub-projects)`,
+        timestamp: new Date().toISOString(),
+      },
+      ctx.projectPath,
+    )
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  remove_workspace: unbind a workspace from this chat               */
+  /* ---------------------------------------------------------------- */
+
+  private async handleRemoveWorkspace(
+    response: DispatcherResponse,
+    msg: IMMessage,
+    ctx: { thinkingCardId?: string; replyTo?: string; store: MemoryStore; projectPath: string },
+  ): Promise<void> {
+    const resolver = await this.server.getProjectResolver()
+    const workspaces = resolver.getWorkspacesForChat(msg.chatId)
+
+    if (workspaces.length === 0) {
+      await this.deliverReply(
+        msg.chatId,
+        'No workspace is bound to this chat.',
+        ctx.thinkingCardId,
+        undefined,
+        ctx.replyTo,
+      )
+      return
+    }
+
+    const workspaceId = response.projectId || workspaces[0].record.id
+    const removed = resolver.removeWorkspaceFromChat(msg.chatId, workspaceId)
+
+    if (removed) {
+      await this.deliverReply(
+        msg.chatId,
+        `✅ Workspace removed: \`${workspaceId}\`\n\nAll sub-projects from this workspace are no longer accessible in this chat.`,
+        ctx.thinkingCardId,
+        { title: '📦 Workspace Removed', color: 'green' },
+        ctx.replyTo,
+      )
+    } else {
+      await this.deliverReply(
+        msg.chatId,
+        `No workspace binding found for \`${workspaceId}\``,
+        ctx.thinkingCardId,
+        undefined,
+        ctx.replyTo,
+      )
+    }
+
+    ctx.store.addMessage(
+      msg.chatId,
+      {
+        role: 'assistant',
+        content: `Removed workspace binding: ${workspaceId}`,
         timestamp: new Date().toISOString(),
       },
       ctx.projectPath,
