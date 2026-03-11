@@ -69,9 +69,22 @@ export class ProjectResolver {
 
     const seenIds = new Set(results.map((p) => p.id))
 
-    // Include workspace sub-projects that have been cloned (registered)
+    // Include workspace root repos and their sub-projects
     const workspaces = this.workspaceRegistry.getForChat(chatId)
     for (const ws of workspaces) {
+      // Workspace root repo itself (for issue queries, etc.)
+      if (!seenIds.has(ws.id)) {
+        seenIds.add(ws.id)
+        results.push({
+          id: ws.id,
+          gitUrl: ws.gitUrl,
+          localPath: ws.localPath,
+          defaultBranch: ws.defaultBranch,
+          lastUsed: ws.lastUsed,
+        })
+      }
+
+      // Workspace sub-projects that have been cloned (registered)
       const wsProjects = this.registry.getByWorkspace(ws.id)
       for (const p of wsProjects) {
         if (seenIds.has(p.id)) continue
