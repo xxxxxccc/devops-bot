@@ -47,7 +47,9 @@ async function resolveRepo(projectPath: string, repoOverride?: string) {
 const repoParam = z
   .string()
   .optional()
-  .describe('Target repo as "owner/repo" (e.g. "FiloAI/filo-desktop"). Omit to use default project.')
+  .describe(
+    'Target repo as "owner/repo" (e.g. "FiloAI/filo-desktop"). Omit to use default project.',
+  )
 
 const listIssuesSchema = z.object({
   repo: repoParam,
