@@ -17,6 +17,8 @@ export type {
   CreateMessageParams,
   AIImageMediaType,
 } from './types.js'
+export { ModelRouter, getModelRouter } from './router.js'
+export type { ModelRoute } from './router.js'
 
 /**
  * Create an AI provider from explicit config.

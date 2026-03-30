@@ -637,6 +637,18 @@ export class MemoryStore {
     }
     this.db?.close()
   }
+
+  /* ---------------------------------------------------------------- */
+  /*  Working Memory                                                    */
+  /* ---------------------------------------------------------------- */
+
+  getWorkingMemory(chatId: string): string | null {
+    return this.db?.getWorkingMemory(chatId) ?? null
+  }
+
+  upsertWorkingMemory(chatId: string, content: string, modelId?: string): void {
+    this.db?.upsertWorkingMemory(chatId, content, modelId)
+  }
 }
 
 // Singleton

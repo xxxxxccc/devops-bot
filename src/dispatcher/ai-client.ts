@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import type { Attachment } from '../channels/types.js'
 import type { ToolContext } from '../core/types.js'
 import type { AIContentBlock, AIMessage, AIProvider } from '../providers/types.js'
-import { createProviderFromEnv } from '../providers/index.js'
+import { getModelRouter } from '../providers/router.js'
 import { retry } from '../infra/retry.js'
 import { createLogger } from '../infra/logger.js'
 import { DISPATCHER_TOOLS, DISPATCHER_TOOL_EXECUTORS } from './tools.js'
@@ -65,6 +65,7 @@ export interface DispatcherResponse {
 
 export class DispatcherAIClient {
   private provider: AIProvider | null = null
+  private resolvedModel: string = DISPATCHER_MODEL
 
   private readonly debugLogPath: string
 
@@ -99,7 +100,7 @@ export class DispatcherAIClient {
       const response = await retry(
         () =>
           provider.createMessage({
-            model: DISPATCHER_MODEL,
+            model: this.resolvedModel,
             maxTokens: 4096,
             system: systemPrompt,
             messages,
@@ -299,7 +300,7 @@ export class DispatcherAIClient {
     const retryResponse = await retry(
       () =>
         provider.createMessage({
-          model: DISPATCHER_MODEL,
+          model: this.resolvedModel,
           maxTokens: 4096,
           system: systemPrompt,
           messages,
@@ -376,7 +377,9 @@ export class DispatcherAIClient {
 
   private async getProvider(): Promise<AIProvider> {
     if (!this.provider) {
-      this.provider = await createProviderFromEnv()
+      const route = await getModelRouter().resolve(DISPATCHER_MODEL)
+      this.provider = route.provider
+      this.resolvedModel = route.modelId
     }
     return this.provider
   }

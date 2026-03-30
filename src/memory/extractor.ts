@@ -11,7 +11,7 @@
  */
 
 import type { AIProvider } from '../providers/types.js'
-import { createProviderFromEnv } from '../providers/index.js'
+import { getModelRouter } from '../providers/router.js'
 import { createLogger } from '../infra/logger.js'
 import type { Task } from '../core/types.js'
 import type { MemoryStore } from './store.js'
@@ -31,12 +31,15 @@ function stripFences(text: string): string {
 
 export class MemoryExtractor {
   private provider: AIProvider | null = null
+  private resolvedModel: string = MEMORY_MODEL
 
   constructor(private store: MemoryStore) {}
 
   private async getProvider(): Promise<AIProvider> {
     if (!this.provider) {
-      this.provider = await createProviderFromEnv()
+      const route = await getModelRouter().resolve(MEMORY_MODEL)
+      this.provider = route.provider
+      this.resolvedModel = route.modelId
     }
     return this.provider
   }
@@ -95,7 +98,7 @@ Respond with ONLY a valid JSON array, no markdown fences:`
     try {
       const provider = await this.getProvider()
       const response = await provider.createMessage({
-        model: MEMORY_MODEL,
+        model: this.resolvedModel,
         maxTokens: 2048,
         messages: [{ role: 'user', content: prompt }],
       })
@@ -213,7 +216,7 @@ Respond with ONLY a valid JSON array, no markdown fences:`
     try {
       const provider = await this.getProvider()
       const response = await provider.createMessage({
-        model: MEMORY_MODEL,
+        model: this.resolvedModel,
         maxTokens: 2048,
         messages: [{ role: 'user', content: prompt }],
       })

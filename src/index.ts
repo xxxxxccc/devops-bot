@@ -137,6 +137,7 @@ async function startServer(options: CLIOptions) {
 
   const isMultiProject = !projectPath
   const aiProvider = process.env.AI_PROVIDER || 'anthropic'
+  const dispatcherModel = process.env.DISPATCHER_MODEL || 'claude-sonnet-4-5-20250929'
   const taskModel = process.env.TASK_MODEL || 'claude-opus-4-5-20251101'
   const imPlatform = process.env.IM_PLATFORM || 'feishu'
   const authMode = process.env.GITHUB_APP_ID ? 'GitHub App' : 'PAT'
@@ -152,7 +153,7 @@ async function startServer(options: CLIOptions) {
   console.log(`🔑 API Key:  ${aiApiKey.slice(0, 10)}...`)
   console.log(`🤖 Provider: ${aiProvider}`)
   console.log(`🤖 Task AI:  ${taskModel}`)
-  console.log(`🧠 Router:   ${process.env.DISPATCHER_MODEL || 'claude-sonnet-4-5-20250929'}`)
+  console.log(`🧠 Dispatch: ${dispatcherModel}`)
   console.log(`💬 IM:       ${imPlatform}`)
   console.log(`🔐 Auth:     ${authMode}`)
   console.log(`⚡ Parallel:  max ${config.maxConcurrentTasks} tasks`)

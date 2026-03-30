@@ -6,7 +6,7 @@
  */
 
 import { createLogger } from '../infra/logger.js'
-import { createProviderFromEnv } from '../providers/index.js'
+import { getModelRouter } from '../providers/router.js'
 import type { AIProvider } from '../providers/types.js'
 import type { DiffChunk } from './diff-parser.js'
 import {
@@ -66,13 +66,13 @@ export async function reviewWithAI(params: {
   })
 
   log.info('Calling review AI', {
-    model: REVIEW_MODEL,
+    model: _resolvedModel,
     files: params.chunks.length,
     promptChars: userPrompt.length,
   })
 
   const response = await provider.createMessage({
-    model: REVIEW_MODEL,
+    model: _resolvedModel,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
     maxTokens: 8192,
@@ -148,10 +148,13 @@ function normalizeVerdict(v: string | undefined): 'approve' | 'request_changes' 
 }
 
 let _provider: AIProvider | null = null
+let _resolvedModel: string = REVIEW_MODEL
 
 async function getProvider(): Promise<AIProvider> {
   if (!_provider) {
-    _provider = await createProviderFromEnv()
+    const route = await getModelRouter().resolve(REVIEW_MODEL)
+    _provider = route.provider
+    _resolvedModel = route.modelId
   }
   return _provider
 }

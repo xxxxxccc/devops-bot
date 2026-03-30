@@ -533,7 +533,8 @@ devops-bot/
 │   │   ├── types.ts          # AIProvider interface, neutral message types
 │   │   ├── anthropic.ts      # Anthropic (Claude) adapter
 │   │   ├── openai.ts         # OpenAI / compatible API adapter
-│   │   └── index.ts          # Provider factory
+│   │   ├── router.ts         # Model Router — "provider/model" multi-provider routing
+│   │   └── index.ts          # Provider factory + router exports
 │   ├── channels/
 │   │   ├── types.ts          # IMPlatform interface, neutral message types
 │   │   ├── feishu/           # Feishu/Lark adapter (WebSocket, parser, types)
@@ -608,6 +609,13 @@ devops-bot/
 │   │   ├── platform-tools.ts # IM platform tools (send message, etc.)
 │   │   ├── skill-tools.ts    # Skill management (find/install/create)
 │   │   └── summary-tool.ts   # AI summary submission
+│   ├── pipeline/
+│   │   ├── types.ts          # Processor Pipeline types
+│   │   ├── runner.ts         # Pipeline runner (ordered processor chain)
+│   │   ├── index.ts          # Pipeline factory + exports
+│   │   ├── tripwire.ts       # TripWire safety/interrupt mechanism
+│   │   ├── processors/       # Built-in processors (identity, safety, memory, etc.)
+│   │   └── guards/           # TripWire guards (budget, time, filesystem, git)
 │   ├── prompt/               # Project/rules/skills scanner
 │   ├── types/                # Type declarations (node-llama-cpp, etc.)
 │   ├── core/
@@ -634,11 +642,15 @@ devops-bot/
 
 ## Safety
 
+- **TripWire guards**: Pre-call guards (budget, time), tool guards (filesystem, git), with retry-with-feedback
 - Dangerous shell commands are blocked (`rm -rf /`, `sudo`, etc.)
 - Task execution runs in isolated Git worktree sandboxes
 - Changes are submitted as Draft PRs for human review
-- Protected branches cannot be force-pushed
+- Protected branches cannot be force-pushed or deleted
+- File writes are restricted to the sandbox directory
 - PR reviews use memory namespace isolation to prevent cross-contamination
+- **Model Router**: Per-provider API keys with `provider/model` format for isolation
+- **Working Memory**: Per-chat structured state persisted in SQLite
 - Cost-optimized: fast model for routing, powerful model for execution
 
 ## Contributing

@@ -34,6 +34,7 @@ import {
   type WorkspaceContextEntry,
 } from './prompt.js'
 import { uploadAttachments } from '../attachment/index.js'
+import { extractWorkingMemoryUpdate } from '../pipeline/index.js'
 
 const log = createLogger('dispatcher')
 
@@ -187,10 +188,28 @@ export class Dispatcher {
       })
     }
 
-    const systemPrompt = buildDispatcherSystemPrompt({
+    // Working memory — per-chat structured state
+    const workingMemoryJson = store.getWorkingMemory(msg.chatId)
+
+    let systemPrompt = buildDispatcherSystemPrompt({
       projectRules: effectivePath ? this.projectScanner.getProjectRules(effectivePath) : '',
       memoryAvailable: !!this.memoryStoreRef,
     })
+
+    if (workingMemoryJson) {
+      systemPrompt += [
+        '\n\n## Working Memory (per-chat state)',
+        '',
+        'Below is the current structured state for this chat session.',
+        'If the user changes preferences, shifts focus, or you learn something new,',
+        'include the FULL updated JSON inside `<working_memory>` tags in your response.',
+        'Only include the tags when something actually changed — omit them otherwise.',
+        '',
+        '```json',
+        workingMemoryJson,
+        '```',
+      ].join('\n')
+    }
 
     // Send "thinking" card
     const replyOpts = { replyTo: msg.messageId }
@@ -242,6 +261,16 @@ export class Dispatcher {
         await this.platform.sendText(msg.chatId, errorMsg, replyOpts)
       }
       return
+    }
+
+    // Extract and persist working memory updates from AI response
+    if (response.reply) {
+      const { updatedJson, cleanedText } = extractWorkingMemoryUpdate(response.reply)
+      if (updatedJson) {
+        store.upsertWorkingMemory(msg.chatId, updatedJson)
+        response.reply = cleanedText
+        log.info('Working memory updated', { chatId: msg.chatId })
+      }
     }
 
     await this.routeResponse(response, msg, {

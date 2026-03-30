@@ -7,7 +7,7 @@
  */
 
 import type { AIExecutorOptions } from './ai-executor.js'
-import { createProviderFromEnv } from '../providers/index.js'
+import { getModelRouter } from '../providers/router.js'
 
 export type ExecutorRole = 'dispatcher' | 'task'
 
@@ -19,25 +19,31 @@ export async function getExecutorConfig(
   role: ExecutorRole,
   systemPrompt: string,
 ): Promise<AIExecutorOptions> {
-  const provider = await createProviderFromEnv()
+  const router = getModelRouter()
 
   switch (role) {
-    case 'dispatcher':
+    case 'dispatcher': {
+      const spec = process.env.DISPATCHER_MODEL || 'claude-sonnet-4-5-20250929'
+      const route = await router.resolve(spec)
       return {
-        provider,
-        model: process.env.DISPATCHER_MODEL || 'claude-sonnet-4-5-20250929',
+        provider: route.provider,
+        model: route.modelId,
         maxTokens: 4096,
         maxIterations: 1,
         systemPrompt,
       }
+    }
 
-    case 'task':
+    case 'task': {
+      const spec = process.env.TASK_MODEL || 'claude-opus-4-5-20251101'
+      const route = await router.resolve(spec)
       return {
-        provider,
-        model: process.env.TASK_MODEL || 'claude-opus-4-5-20251101',
+        provider: route.provider,
+        model: route.modelId,
         maxTokens: 16384,
         maxIterations: 100,
         systemPrompt,
       }
+    }
   }
 }

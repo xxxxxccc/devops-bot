@@ -15,7 +15,7 @@
 import { createLogger } from '../infra/logger.js'
 import { retry } from '../infra/retry.js'
 import type { AIProvider } from '../providers/types.js'
-import { createProviderFromEnv } from '../providers/index.js'
+import { getModelRouter } from '../providers/router.js'
 
 const log = createLogger('issue-ai')
 
@@ -103,10 +103,13 @@ const SYSTEM_PROMPT = [
 ].join('\n')
 
 let _provider: AIProvider | null = null
+let _resolvedModel: string = ISSUE_AI_MODEL
 
 async function getProvider(): Promise<AIProvider> {
   if (!_provider) {
-    _provider = await createProviderFromEnv()
+    const route = await getModelRouter().resolve(ISSUE_AI_MODEL)
+    _provider = route.provider
+    _resolvedModel = route.modelId
   }
   return _provider
 }
@@ -158,7 +161,7 @@ export async function synthesizeTask(ctx: IssueContext): Promise<SynthesizedTask
     const response = await retry(
       () =>
         provider.createMessage({
-          model: ISSUE_AI_MODEL,
+          model: _resolvedModel,
           maxTokens: 2048,
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userPrompt }],
@@ -372,7 +375,7 @@ export async function triageIssue(
     const response = await retry(
       () =>
         provider.createMessage({
-          model: ISSUE_AI_MODEL,
+          model: _resolvedModel,
           maxTokens: 2048,
           system: TRIAGE_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userPrompt }],
@@ -562,7 +565,7 @@ export async function synthesizeTaskForTarget(
     const response = await retry(
       () =>
         provider.createMessage({
-          model: ISSUE_AI_MODEL,
+          model: _resolvedModel,
           maxTokens: 2048,
           system: TARGET_SYNTHESIS_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: userPrompt }],

@@ -82,6 +82,15 @@ CREATE TABLE IF NOT EXISTS embedding_cache (
 );
 `
 
+const WORKING_MEMORY_SQL = `
+CREATE TABLE IF NOT EXISTS working_memory (
+  chat_id     TEXT PRIMARY KEY,
+  content     TEXT NOT NULL,
+  model_id    TEXT,
+  updated_at  TEXT NOT NULL
+);
+`
+
 const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   id,
@@ -159,6 +168,7 @@ export class MemoryDatabase {
 
   private initSchema(): void {
     this.db.exec(SCHEMA_SQL)
+    this.db.exec(WORKING_MEMORY_SQL)
     this.migrateNamespace()
     // FTS5 — might fail if SQLite was compiled without FTS5
     try {
@@ -559,6 +569,28 @@ export class MemoryDatabase {
   /** Run a batch of operations in a transaction */
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)()
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Working Memory                                                    */
+  /* ---------------------------------------------------------------- */
+
+  getWorkingMemory(chatId: string): string | null {
+    const row = this.db.prepare('SELECT content FROM working_memory WHERE chat_id = ?').get(chatId)
+    return row ? (row as { content: string }).content : null
+  }
+
+  upsertWorkingMemory(chatId: string, content: string, modelId?: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO working_memory (chat_id, content, model_id, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           content = excluded.content,
+           model_id = excluded.model_id,
+           updated_at = excluded.updated_at`,
+      )
+      .run(chatId, content, modelId || null, new Date().toISOString())
   }
 }
 

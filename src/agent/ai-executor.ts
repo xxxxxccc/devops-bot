@@ -11,6 +11,8 @@ import { readFile } from 'node:fs/promises'
 import type { AIContentBlock, AIMessage, AIProvider, AIToolDefinition } from '../providers/types.js'
 import { retry } from '../infra/retry.js'
 import { createLogger } from '../infra/logger.js'
+import { TripWire } from '../pipeline/tripwire.js'
+import type { PreCallGuard, ToolGuard } from '../pipeline/tripwire.js'
 
 const log = createLogger('executor')
 
@@ -40,6 +42,9 @@ export interface AIExecutorOptions {
   maxToolResultLength?: number
   systemPrompt?: string
   onOutput?: (chunk: string) => void
+  signal?: AbortSignal
+  preCallGuards?: PreCallGuard[]
+  toolGuards?: ToolGuard[]
 }
 
 function estimateTokens(text: string): number {
@@ -77,6 +82,11 @@ export class AIExecutor {
   private mcpClients: MCPClient[] = []
   private onOutput: (chunk: string) => void
   private consecutiveToolErrors = 0
+  private signal?: AbortSignal
+  private preCallGuards: PreCallGuard[]
+  private toolGuards: ToolGuard[]
+  private totalTokensUsed = 0
+  private startTime = 0
 
   constructor(options: AIExecutorOptions) {
     this.provider = options.provider
@@ -87,6 +97,9 @@ export class AIExecutor {
     this.maxToolResultLength = options.maxToolResultLength || 50000
     this.systemPrompt = options.systemPrompt
     this.onOutput = options.onOutput || ((chunk) => process.stdout.write(chunk))
+    this.signal = options.signal
+    this.preCallGuards = options.preCallGuards || []
+    this.toolGuards = options.toolGuards || []
   }
 
   async connectMCPServers(configPath: string): Promise<void> {
@@ -134,6 +147,10 @@ export class AIExecutor {
   }
 
   private async callTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+    for (const guard of this.toolGuards) {
+      guard.check(toolName, args)
+    }
+
     const [serverName, ...toolParts] = toolName.split('__')
     const actualToolName = toolParts.join('__')
 
@@ -284,6 +301,20 @@ export class AIExecutor {
     fullOutput: { value: string },
     label: string,
   ): Promise<boolean> {
+    if (this.signal?.aborted) {
+      throw new TripWire('Task was cancelled.', { retry: false }, 'abort')
+    }
+
+    const guardCtx = {
+      iteration: 0,
+      totalTokensUsed: this.totalTokensUsed,
+      startTime: this.startTime,
+      signal: this.signal,
+    }
+    for (const guard of this.preCallGuards) {
+      guard.check(guardCtx)
+    }
+
     const response = await retry(
       () =>
         this.provider.createMessage({
@@ -303,6 +334,10 @@ export class AIExecutor {
         },
       },
     )
+
+    if (response.usage) {
+      this.totalTokensUsed += response.usage.inputTokens + response.usage.outputTokens
+    }
 
     const assistantContent: AIContentBlock[] = []
     let hasToolUse = false
@@ -382,7 +417,11 @@ export class AIExecutor {
     const fullOutput = { value: '' }
     let iteration = 0
     let extensionCount = 0
+    let tripwireRetryCount = 0
     const maxExtensions = 3
+
+    this.startTime = Date.now()
+    this.totalTokensUsed = 0
 
     let messages: AIMessage[] = [{ role: 'user', content: prompt }]
 
@@ -408,6 +447,21 @@ export class AIExecutor {
           break
         }
       } catch (error) {
+        if (error instanceof TripWire) {
+          this.log(`\n[TripWire:${error.processorId || 'unknown'}] ${error.message}`)
+          fullOutput.value += `\n[TripWire] ${error.message}\n`
+
+          if (error.options.retry && tripwireRetryCount < (error.options.maxRetries ?? 2)) {
+            tripwireRetryCount++
+            messages.push({
+              role: 'user',
+              content: `SAFETY VIOLATION: ${error.message}\nPlease adjust your approach and try again.`,
+            })
+            continue
+          }
+          throw error
+        }
+
         const errorMessage = error instanceof Error ? error.message : String(error)
         this.log(`\n[Error] ${errorMessage}`)
         fullOutput.value += `\n[Error] ${errorMessage}\n`
@@ -463,6 +517,20 @@ export class AIExecutor {
             return fullOutput.value
           }
         } catch (error) {
+          if (error instanceof TripWire) {
+            this.log(`\n[TripWire:${error.processorId || 'unknown'}] ${error.message}`)
+            fullOutput.value += `\n[TripWire] ${error.message}\n`
+            if (error.options.retry && tripwireRetryCount < (error.options.maxRetries ?? 2)) {
+              tripwireRetryCount++
+              messages.push({
+                role: 'user',
+                content: `SAFETY VIOLATION: ${error.message}\nPlease adjust your approach and try again.`,
+              })
+              continue
+            }
+            throw error
+          }
+
           const errorMessage = error instanceof Error ? error.message : String(error)
           this.log(`\n[Error] ${errorMessage}`)
           fullOutput.value += `\n[Error] ${errorMessage}\n`

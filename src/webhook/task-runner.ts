@@ -378,9 +378,11 @@ export class TaskRunner {
     projectPath: string,
   ): Promise<string> {
     const { AIExecutor } = await import('../agent/ai-executor.js')
-    const { createProviderFromEnv } = await import('../providers/index.js')
+    const { getModelRouter } = await import('../providers/router.js')
 
-    const provider = await createProviderFromEnv()
+    const taskModelSpec = process.env.TASK_MODEL || 'claude-opus-4-5-20251101'
+    const route = await getModelRouter().resolve(taskModelSpec)
+    const provider = route.provider
 
     const devopsRoot = join(__dirname, '..', '..')
     const workspaceDir = process.env.WORKSPACE_DIR || DEFAULT_WORKSPACE_DIR
@@ -406,12 +408,27 @@ export class TaskRunner {
     let lastBroadcast = 0
     const broadcastThrottleMs = 1000
 
+    const abortController = new AbortController()
+    this.runningAbortControllers.set(task.id, abortController)
+
+    const { BudgetGuard } = await import('../pipeline/guards/budget.js')
+    const { TimeGuard } = await import('../pipeline/guards/time.js')
+    const { FileSystemGuard } = await import('../pipeline/guards/filesystem.js')
+    const { GitGuard } = await import('../pipeline/guards/git.js')
+
+    if (sandbox) {
+      FileSystemGuard.setSandboxPath(sandbox.worktreePath)
+    }
+
     const executor = new AIExecutor({
       provider,
-      model: process.env.TASK_MODEL || 'claude-opus-4-5-20251101',
+      model: route.modelId,
       maxTokens: 16384,
       maxIterations: 100,
       systemPrompt,
+      signal: abortController.signal,
+      preCallGuards: [BudgetGuard, TimeGuard],
+      toolGuards: [FileSystemGuard, GitGuard],
       onOutput: (chunk: string) => {
         output += chunk
         const updatedTask = this.store.update(task.id, { output })
@@ -424,9 +441,6 @@ export class TaskRunner {
         }
       },
     })
-
-    const abortController = new AbortController()
-    this.runningAbortControllers.set(task.id, abortController)
 
     try {
       log.info(`Task ${task.id} connecting to MCP servers`)
