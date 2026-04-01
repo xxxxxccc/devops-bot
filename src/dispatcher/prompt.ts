@@ -595,14 +595,18 @@ function buildRecentConversationSection(
     return { section: '', dropped: 0 }
   }
 
+  const MAX_SINGLE_MSG = 600
   const lines: string[] = []
   let used = 0
 
-  // Prefer newest messages; render output in chronological order.
   for (let i = recentChat.length - 1; i >= 0; i--) {
     const msg = recentChat[i]
     const name = msg.senderName || msg.role
-    const line = `${name}: ${msg.content}`
+    let content = msg.content
+    if (content.length > MAX_SINGLE_MSG) {
+      content = `${content.slice(0, MAX_SINGLE_MSG)}… [truncated]`
+    }
+    const line = `${name}: ${content}`
     const extra = lines.length === 0 ? line.length : line.length + 1
     if (used + extra > maxChars) break
     lines.unshift(line)
