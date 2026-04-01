@@ -295,12 +295,40 @@ export class Dispatcher {
     header?: { title: string; color?: string },
     replyTo?: string,
   ): Promise<void> {
-    if (thinkingCardId) {
-      const ok = await this.platform.updateCard(thinkingCardId, { markdown, header })
-      if (ok) return
-      log.warn('updateCard failed, falling back to new message')
+    const MAX_CARD_CHARS = 4000
+    if (markdown.length <= MAX_CARD_CHARS) {
+      if (thinkingCardId) {
+        const ok = await this.platform.updateCard(thinkingCardId, { markdown, header })
+        if (ok) return
+        log.warn('updateCard failed, falling back to new message')
+      }
+      await this.platform.sendCard(chatId, { markdown, header }, { replyTo })
+      return
     }
-    await this.platform.sendCard(chatId, { markdown, header }, { replyTo })
+
+    const chunks = splitMarkdown(markdown, MAX_CARD_CHARS)
+    for (let i = 0; i < chunks.length; i++) {
+      const isFirst = i === 0
+      const chunkHeader =
+        chunks.length > 1
+          ? {
+              title: `${header?.title || '💬 Reply'} (${i + 1}/${chunks.length})`,
+              color: header?.color,
+            }
+          : header
+      if (isFirst && thinkingCardId) {
+        const ok = await this.platform.updateCard(thinkingCardId, {
+          markdown: chunks[i],
+          header: chunkHeader,
+        })
+        if (ok) continue
+      }
+      await this.platform.sendCard(
+        chatId,
+        { markdown: chunks[i], header: chunkHeader },
+        { replyTo },
+      )
+    }
   }
 
   /**
@@ -1224,4 +1252,29 @@ export class Dispatcher {
     }
     return { store, extractor: this.memoryExtractor, retriever: this.memoryRetriever }
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function splitMarkdown(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+
+  const chunks: string[] = []
+  let remaining = text
+
+  while (remaining.length > maxChars) {
+    let splitAt = remaining.lastIndexOf('\n\n', maxChars)
+    if (splitAt < maxChars * 0.4) splitAt = remaining.lastIndexOf('\n', maxChars)
+    if (splitAt < maxChars * 0.4) splitAt = remaining.lastIndexOf('。', maxChars)
+    if (splitAt < maxChars * 0.4) splitAt = remaining.lastIndexOf('. ', maxChars)
+    if (splitAt < maxChars * 0.4) splitAt = maxChars
+
+    chunks.push(remaining.slice(0, splitAt).trimEnd())
+    remaining = remaining.slice(splitAt).trimStart()
+  }
+
+  if (remaining.length > 0) chunks.push(remaining)
+  return chunks
 }

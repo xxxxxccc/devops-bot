@@ -101,7 +101,7 @@ export class DispatcherAIClient {
         () =>
           provider.createMessage({
             model: this.resolvedModel,
-            maxTokens: 4096,
+            maxTokens: 8192,
             system: systemPrompt,
             messages,
             tools: DISPATCHER_TOOLS,
@@ -128,9 +128,20 @@ export class DispatcherAIClient {
       if (response.stopReason === 'max_tokens' && toolUseBlocks.length === 0 && round <= 3) {
         const truncatedText = extractText(response.content)
 
-        log.warn(`Response truncated (max_tokens) at round ${round}, asking for JSON-only retry`)
+        log.warn(`Response truncated (max_tokens) at round ${round}`)
 
         const partial = extractJSON(truncatedText)
+
+        if (
+          partial &&
+          (partial.intent === 'chat' || partial.intent === 'query_memory') &&
+          partial.reply
+        ) {
+          const continued = await this.continueChatReply(provider, partial.reply)
+          if (continued) partial.reply += continued
+          return partial
+        }
+
         if (partial) return partial
 
         messages.push({ role: 'assistant', content: truncatedText })
@@ -239,6 +250,42 @@ export class DispatcherAIClient {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Truncation recovery                                              */
+  /* ---------------------------------------------------------------- */
+
+  private async continueChatReply(
+    provider: AIProvider,
+    partialReply: string,
+  ): Promise<string | null> {
+    try {
+      const tail = partialReply.slice(-800)
+      const contResponse = await provider.createMessage({
+        model: this.resolvedModel,
+        maxTokens: 4096,
+        system:
+          'You are continuing a response that was cut off mid-sentence. ' +
+          'Output ONLY the remaining text — no preamble, no JSON, no code fences.',
+        messages: [
+          {
+            role: 'user',
+            content: `The reply was cut off here:\n\n…${tail}\n\nContinue from where it stopped.`,
+          },
+        ],
+      })
+      const text = extractText(contResponse.content)
+      if (text && text.trim().length > 5) {
+        log.info(`Continued truncated chat reply (+${text.trim().length} chars)`)
+        return text.trim()
+      }
+    } catch (err) {
+      log.warn('Failed to continue truncated chat reply', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return null
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Response handling                                                */
   /* ---------------------------------------------------------------- */
 
@@ -301,7 +348,7 @@ export class DispatcherAIClient {
       () =>
         provider.createMessage({
           model: this.resolvedModel,
-          maxTokens: 4096,
+          maxTokens: 8192,
           system: systemPrompt,
           messages,
         }),
