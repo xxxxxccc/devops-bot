@@ -42,7 +42,7 @@ function resolveProviderApiKey(providerName: string): { apiKey: string; baseURL?
       `No API key for provider "${providerName}". Set ${upper}_API_KEY or AI_API_KEY.`,
     )
   }
-  const baseURL = process.env[`${upper}_BASE_URL`] || undefined
+  const baseURL = process.env[`${upper}_BASE_URL`] || process.env.AI_BASE_URL || undefined
   return { apiKey, baseURL }
 }
 
