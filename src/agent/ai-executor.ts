@@ -247,11 +247,70 @@ export class AIExecutor {
     )
   }
 
+  /**
+   * Ensure every assistant tool_use block has a matching tool_result in the
+   * immediately following user message.  When context trimming removes messages
+   * or an error interrupts tool execution, orphaned tool_use blocks can remain.
+   * The Anthropic API rejects such conversations with a 400 error.
+   *
+   * This method injects synthetic error tool_results for any missing IDs.
+   */
+  private sanitizeMessages(messages: AIMessage[]): AIMessage[] {
+    const out: AIMessage[] = []
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      out.push(msg)
+
+      if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
+
+      const toolUseIds: string[] = []
+      for (const b of msg.content) {
+        if (b.type === 'tool_use') toolUseIds.push(b.id)
+      }
+      if (toolUseIds.length === 0) continue
+
+      // Collect existing tool_result IDs in the next message
+      const next = messages[i + 1]
+      const existingIds = new Set<string>()
+      if (next?.role === 'user' && Array.isArray(next.content)) {
+        for (const b of next.content) {
+          if (b.type === 'tool_result') existingIds.add(b.toolUseId)
+        }
+      }
+
+      const missingIds = toolUseIds.filter((id) => !existingIds.has(id))
+      if (missingIds.length === 0) continue
+
+      log.warn(`Injecting ${missingIds.length} synthetic tool_result(s) for orphaned tool_use`)
+
+      const synthetic: AIContentBlock[] = missingIds.map((id) => ({
+        type: 'tool_result' as const,
+        toolUseId: id,
+        content: '[Context trimmed — tool result no longer available.]',
+        isError: true,
+      }))
+
+      if (next?.role === 'user' && Array.isArray(next.content)) {
+        // Prepend missing tool_results to existing user message
+        next.content = [...synthetic, ...next.content]
+      } else if (next?.role === 'user' && typeof next.content === 'string') {
+        // Convert string content to block array and prepend tool_results
+        next.content = [...synthetic, { type: 'text' as const, text: next.content }]
+      } else {
+        // No user message follows — inject one
+        out.push({ role: 'user', content: synthetic })
+      }
+    }
+
+    return out
+  }
+
   private manageContextWindow(messages: AIMessage[]): AIMessage[] {
     let estimatedTokens = estimateMessageTokens(messages)
 
     if (estimatedTokens <= this.maxContextTokens) {
-      return messages
+      return this.sanitizeMessages(messages)
     }
 
     this.log(
@@ -261,7 +320,7 @@ export class AIExecutor {
     const firstMessage = messages[0]
     const recentMessages = messages.slice(-10)
 
-    const trimmedMessages = [firstMessage, ...recentMessages.filter((m) => m !== firstMessage)]
+    let trimmedMessages = [firstMessage, ...recentMessages.filter((m) => m !== firstMessage)]
     estimatedTokens = estimateMessageTokens(trimmedMessages)
 
     if (estimatedTokens > this.maxContextTokens) {
@@ -282,6 +341,9 @@ export class AIExecutor {
         }
       }
     }
+
+    // Repair any broken tool_use / tool_result pairs caused by trimming
+    trimmedMessages = this.sanitizeMessages(trimmedMessages)
 
     const finalTokens = estimateMessageTokens(trimmedMessages)
     this.log(
@@ -366,14 +428,32 @@ export class AIExecutor {
 
     messages.push({ role: 'assistant', content: assistantContent })
 
-    if (!hasToolUse || response.stopReason === 'end_turn') {
+    if (!hasToolUse) {
       return true
     }
 
-    // Execute tool calls
+    // Execute tool calls — wrap each in try/catch so that every tool_use
+    // always gets a corresponding tool_result, even when a TripWire fires.
+    const toolUseBlocks = response.content.filter(
+      (b): b is Extract<AIContentBlock, { type: 'tool_use' }> => b.type === 'tool_use',
+    )
     const toolResults: AIContentBlock[] = []
-    for (const block of response.content) {
-      if (block.type === 'tool_use') {
+    let tripwireError: TripWire | null = null
+
+    for (const block of toolUseBlocks) {
+      if (tripwireError) {
+        // A previous tool triggered a TripWire — skip remaining tools but
+        // still emit a tool_result so the message stays well-formed.
+        toolResults.push({
+          type: 'tool_result',
+          toolUseId: block.id,
+          content: `Skipped: a previous tool was blocked by safety guard — ${tripwireError.message}`,
+          isError: true,
+        })
+        continue
+      }
+
+      try {
         let result = await this.callTool(block.name, block.input)
         result = this.truncateToolResult(result, block.name)
 
@@ -386,13 +466,48 @@ export class AIExecutor {
           toolUseId: block.id,
           content: result,
         })
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error)
+        toolResults.push({
+          type: 'tool_result',
+          toolUseId: block.id,
+          content:
+            error instanceof TripWire
+              ? `Blocked by safety guard: ${errMsg}`
+              : `Internal error: ${errMsg}`,
+          isError: true,
+        })
+
+        if (error instanceof TripWire) {
+          tripwireError = error
+        } else {
+          // Fill remaining tool_use blocks with error results, push, then re-throw
+          for (const rem of toolUseBlocks) {
+            if (!toolResults.some((r) => r.type === 'tool_result' && r.toolUseId === rem.id)) {
+              toolResults.push({
+                type: 'tool_result',
+                toolUseId: rem.id,
+                content: `Skipped due to earlier error: ${errMsg}`,
+                isError: true,
+              })
+            }
+          }
+          messages.push({ role: 'user', content: toolResults })
+          throw error
+        }
       }
+    }
+
+    // Always push tool_results before re-throwing so messages stay consistent
+    messages.push({ role: 'user', content: toolResults })
+
+    if (tripwireError) {
+      throw tripwireError
     }
 
     if (this.consecutiveToolErrors >= 5) {
       this.log('\n[Warning] 5+ consecutive tool errors — forcing AI to reassess approach.\n')
       this.consecutiveToolErrors = 0
-      messages.push({ role: 'user', content: toolResults })
       messages.push({
         role: 'user',
         content: [
@@ -408,7 +523,6 @@ export class AIExecutor {
       return false
     }
 
-    messages.push({ role: 'user', content: toolResults })
     return false
   }
 
@@ -471,7 +585,7 @@ export class AIExecutor {
           this.log('[Context Management] Token limit exceeded, aggressive trimming...')
           const firstMsg = messages[0]
           const lastMsgs = messages.slice(-4)
-          messages = [firstMsg, ...lastMsgs.filter((m) => m !== firstMsg)]
+          messages = this.sanitizeMessages([firstMsg, ...lastMsgs.filter((m) => m !== firstMsg)])
           continue
         }
 
@@ -489,7 +603,7 @@ export class AIExecutor {
       const firstMsg = messages[0]
       const recentCount = Math.max(4, 10 - extensionCount * 2)
       const lastMsgs = messages.slice(-recentCount)
-      messages = [firstMsg, ...lastMsgs.filter((m) => m !== firstMsg)]
+      messages = this.sanitizeMessages([firstMsg, ...lastMsgs.filter((m) => m !== firstMsg)])
 
       const estimatedTokens = estimateMessageTokens(messages)
       this.log(
@@ -539,7 +653,10 @@ export class AIExecutor {
             log.warn('Token limit exceeded (ext), aggressive trimming', { iteration })
             const firstMsg2 = messages[0]
             const lastMsgs2 = messages.slice(-4)
-            messages = [firstMsg2, ...lastMsgs2.filter((m) => m !== firstMsg2)]
+            messages = this.sanitizeMessages([
+              firstMsg2,
+              ...lastMsgs2.filter((m) => m !== firstMsg2),
+            ])
             continue
           }
 
