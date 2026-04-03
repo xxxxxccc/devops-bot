@@ -37,14 +37,14 @@ export class FeishuMessageParser {
     // 1. Resolve sender name via contacts API
     const senderName = await this.resolveSenderName(openId)
 
-    // 2. Extract text content
-    const text = this.extractText(message)
-
-    // 3. Download attachments (images, files)
-    const attachments = await this.downloadAttachments(message)
-
-    // 4. Extract @mentions
+    // 2. Extract @mentions
     const mentions = this.extractMentions(message)
+
+    // 3. Extract text content
+    const text = this.extractText(message, mentions)
+
+    // 4. Download attachments (images, files)
+    const attachments = await this.downloadAttachments(message)
 
     // 5. Extract links from text
     const links = this.extractLinks(text)
@@ -92,14 +92,14 @@ export class FeishuMessageParser {
   /**
    * Extract plain text from various Feishu message types.
    */
-  private extractText(message: any): string {
+  private extractText(message: any, mentions: Mention[]): string {
     try {
       const content = JSON.parse(message.content || '{}')
       const messageType: string = message.message_type
 
       switch (messageType) {
         case 'text':
-          return content.text || ''
+          return this.normalizeTextMentions(content.text || '', mentions)
 
         case 'post': {
           // Rich text: extract all text elements
@@ -257,6 +257,29 @@ export class FeishuMessageParser {
       })
     }
     return mentions
+  }
+
+  private normalizeTextMentions(text: string, mentions: Mention[]): string {
+    if (!text) return ''
+
+    let normalized = text
+    for (const mention of mentions) {
+      if (!mention.key) continue
+      normalized = normalized.split(mention.key).join(this.formatMention(mention))
+    }
+
+    return normalized
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+  }
+
+  private formatMention(mention: Mention): string {
+    const label =
+      mention.name.trim() || mention.openId.trim() || mention.key.replace(/^@/, '').trim() || 'user'
+
+    return label.startsWith('@') ? label : `@${label}`
   }
 
   /**

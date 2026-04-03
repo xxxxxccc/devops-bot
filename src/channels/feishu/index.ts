@@ -260,18 +260,21 @@ export class FeishuChannel implements IMPlatform {
       const parsed = await this.parser.parse(eventData)
       if (parsed.sender.openId === 'unknown') return
 
+      const isMentioned = this.isBotMentioned(parsed.mentions)
+      const normalizedText = isMentioned
+        ? this.stripLeadingBotMention(parsed.text, parsed.mentions)
+        : parsed.text
+
       const msg: IMMessage = {
         chatId: parsed.chatId,
         messageId: parsed.messageId,
         senderId: parsed.sender.openId,
         senderName: parsed.sender.name,
-        text: parsed.text,
+        text: normalizedText,
         mentions: parsed.mentions.map((m) => ({ id: m.openId, name: m.name })),
         attachments: parsed.attachments,
         links: parsed.links,
       }
-
-      const isMentioned = this.isBotMentioned(parsed.mentions)
 
       log.info(
         `Message from ${msg.senderName}${isMentioned ? ' (@bot)' : ''}: ${msg.text.slice(0, 100)}`,
@@ -306,6 +309,42 @@ export class FeishuChannel implements IMPlatform {
   private isBotMentioned(mentions: Array<{ openId: string }>): boolean {
     if (!this.botOpenId) return true
     return mentions.some((m) => m.openId === this.botOpenId)
+  }
+
+  private stripLeadingBotMention(
+    text: string,
+    mentions: Array<{ key: string; openId: string; name: string }>,
+  ): string {
+    if (!text) return ''
+    if (!this.botOpenId) return text.trim()
+
+    const botMention = mentions.find((m) => m.openId === this.botOpenId)
+    if (!botMention) return text.trim()
+
+    const candidates = new Set<string>()
+    for (const value of [botMention.name, botMention.openId, botMention.key]) {
+      const trimmed = value.trim()
+      if (!trimmed) continue
+      candidates.add(trimmed.startsWith('@') ? trimmed : `@${trimmed}`)
+    }
+
+    let normalized = text.trimStart()
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const candidate of candidates) {
+        const next = normalized.replace(
+          new RegExp(`^${escapeRegExp(candidate)}(?:[\\s,:，：]+)?`, 'u'),
+          '',
+        )
+        if (next !== normalized) {
+          normalized = next.trimStart()
+          changed = true
+        }
+      }
+    }
+
+    return normalized.trim()
   }
 
   private scheduleDispatch(msg: IMMessage): void {
@@ -376,4 +415,8 @@ export class FeishuChannel implements IMPlatform {
       }
     }
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
