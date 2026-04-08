@@ -22,7 +22,7 @@ export type MemorySource = 'conversation' | 'task' | 'manual' | 'review'
 /** A single memory item (extracted fact) */
 export interface MemoryItem {
   id: string
-  type: MemoryType
+  type: MemoryType | (string & {})
   /** The extracted fact or record */
   content: string
   /** SHA-256 hash of normalized content (for deduplication) */
@@ -71,7 +71,7 @@ export interface ConversationRecord {
 
 /** Summary of a memory category for AI browsing */
 export interface MemoryCategorySummary {
-  type: MemoryType
+  type: MemoryType | (string & {})
   count: number
   recent: {
     id: string
@@ -89,4 +89,27 @@ export interface MemorySearchResult {
   score: number
   /** How this result was found */
   matchSource: 'vector' | 'keyword' | 'hybrid'
+}
+
+/** Audit trail entry for memory changes */
+export interface MemoryHistoryEntry {
+  id: number
+  memoryId: string
+  action: 'created' | 'updated' | 'deleted'
+  oldContent: string | null
+  newContent: string | null
+  changedAt: string
+  changedBy?: string
+}
+
+/** Per-project memory extraction configuration (loaded from .devops-bot.json) */
+export interface MemoryExtractionConfig {
+  /** Custom memory types beyond the built-in ones */
+  customTypes?: Array<{ name: string; description: string }>
+  /** Custom extraction prompt for conversation memories (replaces default) */
+  conversationPrompt?: string
+  /** Custom extraction prompt for task result memories (replaces default) */
+  taskResultPrompt?: string
+  /** Types to extract (overrides default list). If not set, uses built-in + customTypes */
+  extractTypes?: string[]
 }

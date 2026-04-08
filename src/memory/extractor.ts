@@ -16,6 +16,7 @@ import { createLogger } from '../infra/logger.js'
 import type { Task } from '../core/types.js'
 import type { MemoryStore } from './store.js'
 import type { ConversationRecord, MemoryItem } from './types.js'
+import { loadExtractionConfig, buildTypeInstructions } from './config.js'
 
 const log = createLogger('extractor')
 
@@ -78,14 +79,16 @@ export class MemoryExtractor {
       .map((m) => `${m.senderName || m.role}: ${m.content}`)
       .join('\n')
 
-    const prompt = `Analyze the following conversation and extract important facts.
+    const config = loadExtractionConfig(conversation.projectPath)
+    const typeInstructions = buildTypeInstructions(config)
+
+    const prompt = config?.conversationPrompt
+      ? `${config.conversationPrompt}\n\nConversation:\n${messagesText}\n\nRespond with ONLY a valid JSON array, no markdown fences:`
+      : `Analyze the following conversation and extract important facts.
 Return a JSON array of objects with fields: type, content.
 
 Types:
-- "decision": Technical decisions made (what was chosen, why)
-- "context": Project context learned (architecture, conventions)
-- "preference": User preferences discovered (code style, tools)
-- "issue": Problems or issues mentioned (bugs, tech debt)
+${typeInstructions}
 
 Only extract genuinely important and specific information. Skip greetings, acknowledgments, and generic statements.
 If nothing worth remembering, return an empty array [].
@@ -198,13 +201,16 @@ Respond with ONLY a valid JSON array, no markdown fences:`
     sourceId: string,
     projectPath: string,
   ): Promise<MemoryItem[]> {
-    const prompt = `Analyze the following AI task execution summary and extract important facts.
+    const config = loadExtractionConfig(projectPath)
+    const typeInstructions = buildTypeInstructions(config)
+
+    const prompt = config?.taskResultPrompt
+      ? `${config.taskResultPrompt}\n\nSummary:\n${text.slice(0, 3000)}\n\nRespond with ONLY a valid JSON array, no markdown fences:`
+      : `Analyze the following AI task execution summary and extract important facts.
 Return a JSON array of objects with fields: type, content.
 
 Types:
-- "decision": Technical decisions made during execution
-- "issue": Problems discovered or created
-- "context": Project context learned
+${typeInstructions}
 
 Only extract genuinely important facts. If nothing worth remembering, return [].
 

@@ -28,6 +28,8 @@ import { createEmbeddingProvider, getOrComputeEmbedding } from './embedding.js'
 import type { EmbeddingProvider } from './embedding.js'
 import { hybridSearch } from './search.js'
 import type { SearchOptions } from './search.js'
+import { semanticDedup, semanticDedupConfig } from './semantic-dedup.js'
+import { pruneStaleMemories } from './pruner.js'
 import type {
   ChatMessage,
   ConversationRecord,
@@ -102,6 +104,8 @@ export class MemoryStore {
 
   /** JSONL export debounce timer */
   private exportTimer: NodeJS.Timeout | null = null
+  /** Periodic pruning timer */
+  private pruneTimer: NodeJS.Timeout | null = null
 
   /** Expose the raw SQLite database handle for shared use (e.g. project registry). */
   getDatabase(): any {
@@ -132,6 +136,12 @@ export class MemoryStore {
 
     const itemsAfterInit = this.db.getTotalItemCount()
     log.info(`Memory store ready (${itemsAfterInit} items, SQLite backend)`)
+
+    // Schedule periodic pruning (every 24h, first run after 60s)
+    if (process.env.MEMORY_PRUNE_ENABLED !== 'false') {
+      this.pruneTimer = setInterval(() => void this.runPruning(), 24 * 3600 * 1000)
+      setTimeout(() => void this.runPruning(), 60_000)
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -376,9 +386,9 @@ export class MemoryStore {
 
     const result = deduplicateOrReinforce(row, this.db)
 
-    // Async: generate embedding and insert vector (non-blocking)
+    // Async: semantic dedup check + embedding (non-blocking)
     if (result.action === 'inserted') {
-      void this.embedAndIndex(row.id, contentHash, partial.content)
+      void this.semanticDedupAndEmbed(row)
     }
 
     // Schedule JSONL export
@@ -403,6 +413,114 @@ export class MemoryStore {
         error: err instanceof Error ? err.message : String(err),
       })
     }
+  }
+
+  /**
+   * After hash-based dedup inserts a new item, check for semantic duplicates
+   * via vector search + LLM decision, then embed the final result.
+   */
+  private async semanticDedupAndEmbed(row: MemoryItemRow): Promise<void> {
+    if (!this.db) return
+    const provider = await this.ensureEmbeddings()
+
+    // Try semantic dedup if embeddings are available
+    if (provider && semanticDedupConfig.enabled) {
+      try {
+        // Search for similar existing memories (excluding the just-inserted one)
+        const candidates = await hybridSearch(row.content, row.project_path, this.db, provider, {
+          limit: semanticDedupConfig.topK,
+          minScore: semanticDedupConfig.minScore,
+        })
+        // Filter out the item we just inserted
+        const filtered = candidates.filter((c) => c.item.id !== row.id)
+
+        if (filtered.length > 0) {
+          const decision = await semanticDedup(row.content, row.type, filtered)
+
+          // Validate targetId against candidate set to prevent LLM hallucination
+          const candidateIds = new Set(filtered.map((c) => c.item.id))
+          const targetId =
+            'targetId' in decision ? (decision as { targetId: string }).targetId : undefined
+          if (targetId && !candidateIds.has(targetId)) {
+            log.warn('Semantic dedup: LLM returned unknown targetId, falling back to ADD', {
+              targetId,
+              candidateIds: [...candidateIds],
+            })
+            // Fall through to embed as new
+          } else {
+            switch (decision.action) {
+              case 'update': {
+                // Merge into existing: delete new item, update target
+                this.db.deleteItem(row.id)
+                await this.updateItemContent(decision.targetId, decision.mergedContent)
+                this.scheduleExport()
+                log.debug('Semantic dedup: UPDATE — merged into existing', {
+                  newId: row.id,
+                  targetId: decision.targetId,
+                })
+                return
+              }
+              case 'noop': {
+                // Same meaning: delete new item, reinforce target
+                this.db.deleteItem(row.id)
+                this.db.updateReinforcement(decision.targetId)
+                this.scheduleExport()
+                log.debug('Semantic dedup: NOOP — reinforced existing', {
+                  newId: row.id,
+                  targetId: decision.targetId,
+                })
+                return
+              }
+              case 'delete': {
+                // Contradicts old: delete old, keep new
+                this.db.deleteItem(decision.targetId)
+                this.scheduleExport()
+                log.debug('Semantic dedup: DELETE — removed contradicted memory', {
+                  newId: row.id,
+                  targetId: decision.targetId,
+                })
+                break // fall through to embed the new item
+              }
+              case 'add':
+              default:
+                // Genuinely new — fall through to embed
+                break
+            }
+          }
+        }
+      } catch (err) {
+        log.warn('Semantic dedup failed, keeping new item', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    // Embed and index the (new or surviving) item
+    await this.embedAndIndex(row.id, row.content_hash, row.content)
+  }
+
+  /** Update memory content with re-embedding and audit trail. */
+  async updateItemContent(
+    id: string,
+    newContent: string,
+    changedBy?: string,
+  ): Promise<MemoryItem | undefined> {
+    if (!this.db) return undefined
+    const newHash = computeContentHash(newContent)
+    const updated = this.db.updateItemContent(id, newContent, newHash, changedBy)
+    if (updated) {
+      void this.embedAndIndex(updated.id, newHash, newContent)
+      this.scheduleExport()
+    }
+    return updated ? rowToMemoryItem(updated) : undefined
+  }
+
+  /** Delete a memory item with audit trail. */
+  deleteItem(id: string, changedBy?: string): boolean {
+    if (!this.db) return false
+    const result = this.db.deleteItem(id, changedBy)
+    if (result) this.scheduleExport()
+    return result
   }
 
   /** Get all memory items for a project */
@@ -449,8 +567,13 @@ export class MemoryStore {
   getMemoryIndex(projectPath: string): MemoryCategorySummary[] {
     if (!this.db) return []
 
+    // Collect all types: built-in + any custom types in the database
+    const allItems = this.db.getAllItems(projectPath)
+    const knownTypes = new Set<string>(MEMORY_TYPES as string[])
+    for (const item of allItems) knownTypes.add(item.type)
+
     const result: MemoryCategorySummary[] = []
-    for (const type of MEMORY_TYPES) {
+    for (const type of knownTypes) {
       const items = this.db.getItemsByType(type, projectPath)
       const recent = items.slice(0, 3).map((row) => ({
         id: row.id,
@@ -458,7 +581,7 @@ export class MemoryStore {
         createdAt: row.created_at,
         createdBy: row.created_by || undefined,
       }))
-      result.push({ type, count: items.length, recent })
+      result.push({ type: type as MemoryType, count: items.length, recent })
     }
     return result
   }
@@ -628,6 +751,25 @@ export class MemoryStore {
   // Lifecycle
   // ========================
 
+  /** Run memory pruning across all projects. */
+  private async runPruning(): Promise<void> {
+    if (!this.db) return
+    try {
+      const paths = this.db.getDistinctProjectPaths()
+      for (const projectPath of paths) {
+        const result = pruneStaleMemories(projectPath, this.db)
+        if (result.pruned > 0) {
+          log.info(`Pruned ${result.pruned} memories for ${projectPath}: ${result.reason}`)
+          this.scheduleExport()
+        }
+      }
+    } catch (err) {
+      log.warn('Memory pruning failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   async close(): Promise<void> {
     const hasPending = this.pendingMessages.size > 0 || this.stateChanged
     if (hasPending) await this.saveConversations()
@@ -635,6 +777,7 @@ export class MemoryStore {
       clearTimeout(this.exportTimer)
       this.exportJsonl()
     }
+    if (this.pruneTimer) clearInterval(this.pruneTimer)
     this.db?.close()
   }
 

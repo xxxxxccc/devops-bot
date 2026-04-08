@@ -41,8 +41,8 @@ export function computeContentHash(content: string): string {
 /* ------------------------------------------------------------------ */
 
 export interface DedupResult {
-  /** Whether this was a new item (inserted) or existing (reinforced) */
-  action: 'inserted' | 'reinforced'
+  /** Whether this was a new item (inserted), existing (reinforced), or merged (updated) */
+  action: 'inserted' | 'reinforced' | 'updated'
   /** The memory item (new or existing) */
   item: MemoryItem
 }

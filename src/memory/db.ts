@@ -102,6 +102,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 );
 `
 
+const HISTORY_SQL = `
+CREATE TABLE IF NOT EXISTS memory_history (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id   TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  old_content TEXT,
+  new_content TEXT,
+  old_hash    TEXT,
+  new_hash    TEXT,
+  changed_at  TEXT NOT NULL,
+  changed_by  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_history_memory ON memory_history(memory_id);
+`
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
@@ -126,6 +141,18 @@ export interface EmbeddingCacheRow {
   embedding: Buffer
   model: string
   created_at: string
+}
+
+export interface MemoryHistoryRow {
+  id: number
+  memory_id: string
+  action: 'created' | 'updated' | 'deleted'
+  old_content: string | null
+  new_content: string | null
+  old_hash: string | null
+  new_hash: string | null
+  changed_at: string
+  changed_by: string | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -170,11 +197,20 @@ export class MemoryDatabase {
     this.db.exec(SCHEMA_SQL)
     this.db.exec(WORKING_MEMORY_SQL)
     this.migrateNamespace()
+    this.migrateUpdatedAt()
     // FTS5 — might fail if SQLite was compiled without FTS5
     try {
       this.db.exec(FTS_SQL)
     } catch (err) {
       log.warn('FTS5 unavailable, keyword search disabled', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    // History table for audit trail
+    try {
+      this.db.exec(HISTORY_SQL)
+    } catch (err) {
+      log.warn('History table creation failed', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -194,6 +230,23 @@ export class MemoryDatabase {
       }
     } catch (err) {
       log.warn('Namespace migration check failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  /** Add updated_at column if missing (migration for existing databases). */
+  private migrateUpdatedAt(): void {
+    try {
+      const cols = this.db.prepare("PRAGMA table_info('memory_items')").all() as Array<{
+        name: string
+      }>
+      if (!cols.some((c) => c.name === 'updated_at')) {
+        this.db.exec('ALTER TABLE memory_items ADD COLUMN updated_at TEXT')
+        log.info('Migrated memory_items: added updated_at column')
+      }
+    } catch (err) {
+      log.warn('updated_at migration check failed', {
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -258,6 +311,42 @@ export class MemoryDatabase {
   }
 
   /* ---------------------------------------------------------------- */
+  /*  History audit                                                    */
+  /* ---------------------------------------------------------------- */
+
+  /** Write an audit record to memory_history. */
+  private insertHistory(
+    memoryId: string,
+    action: 'created' | 'updated' | 'deleted',
+    oldContent: string | null,
+    newContent: string | null,
+    oldHash: string | null,
+    newHash: string | null,
+    changedBy?: string | null,
+  ): void {
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO memory_history
+             (memory_id, action, old_content, new_content, old_hash, new_hash, changed_at, changed_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          memoryId,
+          action,
+          oldContent,
+          newContent,
+          oldHash,
+          newHash,
+          new Date().toISOString(),
+          changedBy ?? null,
+        )
+    } catch {
+      // history table unavailable — non-critical
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Memory item CRUD                                                 */
   /* ---------------------------------------------------------------- */
 
@@ -283,6 +372,15 @@ export class MemoryDatabase {
       item.last_reinforced_at,
     )
     this.syncFtsInsert(item)
+    this.insertHistory(
+      item.id,
+      'created',
+      null,
+      item.content,
+      null,
+      item.content_hash,
+      item.created_by,
+    )
   }
 
   getItemByHash(contentHash: string, projectPath: string): MemoryItemRow | undefined {
@@ -305,6 +403,101 @@ export class MemoryDatabase {
       WHERE id = ?
     `)
     stmt.run(new Date().toISOString(), id)
+  }
+
+  /** Update memory content with full audit trail + FTS/vector re-index. */
+  updateItemContent(
+    id: string,
+    newContent: string,
+    newHash: string,
+    changedBy?: string,
+  ): MemoryItemRow | undefined {
+    const old = this.getItem(id)
+    if (!old) return undefined
+    this.insertHistory(id, 'updated', old.content, newContent, old.content_hash, newHash, changedBy)
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        `UPDATE memory_items
+         SET content = ?, content_hash = ?, updated_at = ?,
+             reinforcement_count = reinforcement_count + 1,
+             last_reinforced_at = ?
+         WHERE id = ?`,
+      )
+      .run(newContent, newHash, now, now, id)
+    // Re-sync FTS: delete old entry, insert new
+    this.syncFtsDelete(old)
+    const updated = this.getItem(id)!
+    this.syncFtsInsert(updated)
+    // Clear old vector (caller will re-embed)
+    this.deleteVector(id)
+    // Clear stale embedding cache only if no other items still reference the old hash
+    if (old.content_hash !== newHash) {
+      try {
+        const refCount = (
+          this.db
+            .prepare('SELECT COUNT(*) as cnt FROM memory_items WHERE content_hash = ?')
+            .get(old.content_hash) as { cnt: number }
+        ).cnt
+        if (refCount === 0) {
+          this.db
+            .prepare('DELETE FROM embedding_cache WHERE content_hash = ?')
+            .run(old.content_hash)
+        }
+      } catch {
+        // cache cleanup non-critical
+      }
+    }
+    return updated
+  }
+
+  /** Delete a memory item with audit trail. */
+  deleteItem(id: string, changedBy?: string): boolean {
+    const item = this.getItem(id)
+    if (!item) return false
+    this.insertHistory(id, 'deleted', item.content, null, item.content_hash, null, changedBy)
+    this.syncFtsDelete(item)
+    this.deleteVector(id)
+    this.db.prepare('DELETE FROM memory_items WHERE id = ?').run(id)
+    return true
+  }
+
+  /** Get change history for a memory item. */
+  getHistory(memoryId: string): MemoryHistoryRow[] {
+    try {
+      return this.db
+        .prepare('SELECT * FROM memory_history WHERE memory_id = ? ORDER BY id ASC')
+        .all(memoryId) as MemoryHistoryRow[]
+    } catch {
+      return []
+    }
+  }
+
+  /** Get stale memory candidates for pruning. */
+  getStaleCandidates(
+    projectPath: string,
+    maxAgeDays: number,
+    minReinforcement: number,
+  ): MemoryItemRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM memory_items
+         WHERE project_path = ?
+           AND reinforcement_count < ?
+           AND julianday('now') - julianday(created_at) > ?
+           AND (last_reinforced_at IS NULL OR julianday('now') - julianday(last_reinforced_at) > ?)
+         ORDER BY reinforcement_count ASC, created_at ASC`,
+      )
+      .all(projectPath, minReinforcement, maxAgeDays, maxAgeDays) as MemoryItemRow[]
+  }
+
+  /** Get all distinct project paths (for pruning iteration). */
+  getDistinctProjectPaths(): string[] {
+    return (
+      this.db.prepare('SELECT DISTINCT project_path FROM memory_items').all() as Array<{
+        project_path: string
+      }>
+    ).map((r) => r.project_path)
   }
 
   getAllItems(projectPath: string): MemoryItemRow[] {
@@ -353,6 +546,19 @@ export class MemoryDatabase {
     }
   }
 
+  /** Remove an entry from the FTS5 content-sync table. */
+  private syncFtsDelete(item: MemoryItemRow): void {
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO memory_fts(memory_fts, id, content, type, created_by) VALUES('delete', ?, ?, ?, ?)",
+        )
+        .run(item.id, item.content, item.type, item.created_by || '')
+    } catch {
+      // FTS unavailable
+    }
+  }
+
   /* ---------------------------------------------------------------- */
   /*  Vector operations                                                */
   /* ---------------------------------------------------------------- */
@@ -368,6 +574,16 @@ export class MemoryDatabase {
       log.warn(`Failed to insert vector for ${id}`, {
         error: err instanceof Error ? err.message : String(err),
       })
+    }
+  }
+
+  /** Remove a vector entry (used during update/delete). */
+  private deleteVector(id: string): void {
+    if (!this.vectorAvailable) return
+    try {
+      this.db.prepare('DELETE FROM memory_vec WHERE id = ?').run(id)
+    } catch {
+      // vector unavailable
     }
   }
 
@@ -544,7 +760,13 @@ export class MemoryDatabase {
    * Layer 2 AI can `read_file data/memory/decision.jsonl` to browse.
    */
   exportToJsonl(memoryRoot: string): void {
-    for (const type of MEMORY_TYPES) {
+    // Collect all types: built-in + any custom types in the database
+    const dbTypes = (
+      this.db.prepare('SELECT DISTINCT type FROM memory_items').all() as Array<{ type: string }>
+    ).map((r) => r.type)
+    const allTypes = new Set<string>([...MEMORY_TYPES, ...dbTypes])
+
+    for (const type of allTypes) {
       const items = this.db
         .prepare('SELECT * FROM memory_items WHERE type = ? ORDER BY created_at ASC')
         .all(type) as MemoryItemRow[]
