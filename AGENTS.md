@@ -36,7 +36,7 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 - **Issue AI**: Independent AI layer that reads full issue context (body + comments) and synthesizes actionable tasks; also scans external issues with configured labels; in workspace mode, uses **two-phase cross-repo triage** (quality gate + routing to sub-projects, with sub-issue creation)
 - **GitHub App authentication** for GitHub operations (PRs, Issues, git push); PAT fallback supported
 - Skills stored at **workspace level** (`~/.devops-bot/skills/`), shared across all projects
-- Memory persists in `data/memory/` using **SQLite** (primary) + **JSONL** exports (AI browsing)
+- Memory persists in `data/memory/` using **SQLite** (primary) + **JSONL** exports (AI browsing); features **semantic dedup** (LLM-driven ADD/UPDATE/NOOP/DELETE decision cycle), **change audit trail** (`memory_history` table), **periodic pruning** of stale memories, and **per-project custom extraction prompts** via `.devops-bot.json`
 - Configuration lives in `.env.local` (never committed)
 
 ## Security Rules
@@ -51,7 +51,7 @@ Chat-driven AI coding agent. Users communicate via IM group chat (Feishu or Slac
 ## Detailed Guidelines
 
 - [Architecture & Data Flow](.agents/architecture.md) — two-layer AI, modules, platform abstraction
-- [Memory System](.agents/memory-system.md) — SQLite + JSONL storage, conversation splitting, AI browsing
+- [Memory System](.agents/memory-system.md) — SQLite + JSONL storage, semantic dedup, audit history, pruning, custom extraction
 - [Code Conventions](.agents/code-conventions.md) — TypeScript patterns, Biome rules, file structure
 - GitHub App auth: `src/github/app-auth.ts`, `src/github/client.ts`
 - Multi-project: `src/project/registry.ts`, `src/project/repo-manager.ts`, `src/project/resolver.ts`

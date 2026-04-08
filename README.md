@@ -78,6 +78,12 @@ flowchart TB
         Issue_Mem["issue\n(discovered issues)"]
     end
 
+    subgraph dedup [Dedup Pipeline]
+        HashDedup["Hash Dedup\n(SHA-256)"]
+        SemanticDedup["Semantic Dedup\n(LLM: ADD/UPDATE/NOOP/DELETE)"]
+        History["Audit History\n(memory_history)"]
+    end
+
     TaskDesc --> AI
     TaskMeta --> AI
     AI --> Summary
@@ -87,6 +93,14 @@ flowchart TB
     Summary -->|"on task completed"| TaskResult_Mem
     Summary -->|"AI extract"| Decision_Mem
     Error -->|"AI extract"| Issue_Mem
+
+    TaskInput_Mem --> HashDedup
+    TaskResult_Mem --> HashDedup
+    Decision_Mem --> HashDedup
+    Issue_Mem --> HashDedup
+    HashDedup -->|"new"| SemanticDedup
+    HashDedup -->|"duplicate"| memory
+    SemanticDedup --> History
 ```
 
 ## Three-Tier Task Execution
@@ -264,7 +278,7 @@ Instead of registering individual projects one by one, you can register a single
 - **Multi-provider AI**: Anthropic (Claude), OpenAI, or any OpenAI-compatible API (DeepSeek, Groq, Together, etc.)
 - **Multi-platform IM**: Feishu/Lark (WebSocket) or Slack (Socket Mode) — no public IP needed
 - **Two-Layer AI**: Fast model routes intents, powerful model executes tasks — cost optimized
-- **Project Memory**: AI remembers decisions, context, and past work
+- **Project Memory**: AI remembers decisions, context, and past work — with semantic dedup (LLM-driven), change audit trail, periodic pruning, and per-project custom extraction
 - **Sandbox Execution**: Tasks run in isolated Git worktree sandboxes, changes submitted as Draft PRs
 - **Parallel Execution**: Per-project serial, cross-project parallel task execution (configurable concurrency)
 - **Multi-Project**: Manage multiple git repositories from a single chat group
@@ -433,7 +447,7 @@ devops-bot --help           # Show help
 3. **Layer 2 (Task AI)** analyzes code, makes changes in a sandbox, runs checks
 4. **Task complete** → IM receives summary with modified files, Draft PR created
 
-The system remembers past decisions, user preferences, and task history for context.
+The system remembers past decisions, user preferences, and task history for context. Memories are semantically deduplicated, automatically pruned, and tracked with a full audit trail.
 
 ## API Reference
 
@@ -551,12 +565,15 @@ devops-bot/
 │   │   └── config.ts         # Dispatcher memory config
 │   ├── memory/
 │   │   ├── store.ts          # SQLite-backed memory + JSONL export
-│   │   ├── db.ts             # SQLite schema and queries
-│   │   ├── search.ts         # Hybrid search (vector + keyword)
-│   │   ├── embedding.ts      # Embedding provider integration
+│   │   ├── db.ts             # SQLite schema, CRUD, history audit, migrations
+│   │   ├── search.ts         # Hybrid search (vector + keyword + salience)
+│   │   ├── semantic-dedup.ts # LLM-driven semantic deduplication
+│   │   ├── dedup.ts          # Hash-based dedup + reinforcement
+│   │   ├── pruner.ts         # Periodic cleanup of stale memories
+│   │   ├── config.ts         # Per-project extraction config (.devops-bot.json)
+│   │   ├── embedding.ts      # Embedding provider (local + OpenAI fallback)
 │   │   ├── extractor.ts      # AI-powered memory extraction
-│   │   ├── retriever.ts      # Memory retrieval pipeline
-│   │   ├── dedup.ts          # Memory dedup/reinforcement logic
+│   │   ├── retriever.ts      # Memory retrieval + prompt formatting
 │   │   └── types.ts          # Memory type definitions
 │   ├── webhook/
 │   │   ├── server.ts         # Webhook server composition
