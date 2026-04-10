@@ -358,7 +358,11 @@ export class DispatcherAIClient {
     messages.push({
       role: 'user',
       content:
-        'Your previous response was not valid JSON. Please respond with ONLY the JSON object, no other text:\n{"intent": "...", "reply": "...", ...}',
+        'Your previous response was not valid JSON. ' +
+        'Respond with ONLY the JSON object, with no prose before or after it. ' +
+        'IMPORTANT: every string value must be valid JSON. ' +
+        'If `reply` contains double quotes, escape them as `\\"` or use Chinese quotes like `「」` instead. ' +
+        'Output ONLY: {"intent": "...", "reply": "...", ...}',
     })
 
     const retryResponse = await retry(
@@ -595,9 +599,15 @@ export function extractJSON(text: string): DispatcherResponse | null {
     )
     if (intentMatch) {
       const intent = intentMatch[1] as DispatcherResponse['intent']
-      const replyValue = extractJSONFieldValue(text, 'reply')
-      const titleValue = extractJSONFieldValue(text, 'taskTitle')
-      const descValue = extractJSONFieldValue(text, 'taskDescription')
+      const replyValue =
+        extractJSONFieldValue(text, 'reply') ||
+        extractMalformedStringFieldValue(text, 'reply', true)
+      const titleValue =
+        extractJSONFieldValue(text, 'taskTitle') ||
+        extractMalformedStringFieldValue(text, 'taskTitle', true)
+      const descValue =
+        extractJSONFieldValue(text, 'taskDescription') ||
+        extractMalformedStringFieldValue(text, 'taskDescription', true)
       const projectIdValue = extractJSONFieldValue(text, 'projectId')
 
       if (
@@ -678,6 +688,9 @@ function inspectJSONLikeText(text: string): Record<string, boolean> {
     hasIntent: text.includes('"intent"'),
     hasReplyKey: text.includes('"reply"'),
     hasCompleteReply: extractJSONFieldValue(text, 'reply') !== null,
+    hasRecoverableReply:
+      extractJSONFieldValue(text, 'reply') === null &&
+      extractMalformedStringFieldValue(text, 'reply') !== null,
     hasTaskTitleKey: text.includes('"taskTitle"'),
     hasCompleteTaskTitle: extractJSONFieldValue(text, 'taskTitle') !== null,
   }
@@ -694,6 +707,50 @@ function looksLikeBrokenDispatcherJSON(text: string): boolean {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function extractMalformedStringFieldValue(
+  text: string,
+  key: string,
+  logRecovery = false,
+): string | null {
+  const keyMatch = new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*"`).exec(text)
+  if (!keyMatch) return null
+
+  const valueStart = keyMatch.index + keyMatch[0].length
+  const valueEnd = findMalformedStringFieldEnd(text, valueStart, key)
+  if (valueEnd === -1) return null
+
+  const rawValue = text.slice(valueStart, valueEnd)
+  const normalizedValue = rawValue.trim()
+  if (!normalizedValue) return null
+
+  if (logRecovery) {
+    log.warn('Recovered malformed JSON field', {
+      field: key,
+      recoveredLength: normalizedValue.length,
+      previewStart: previewText(normalizedValue, 'start'),
+      previewEnd: previewText(normalizedValue, 'end'),
+    })
+  }
+
+  return normalizedValue
+}
+
+function findMalformedStringFieldEnd(text: string, valueStart: number, currentKey: string): number {
+  const otherKeys = DISPATCHER_RESPONSE_KEYS.filter((key) => key !== currentKey)
+  const markers = [...otherKeys.map((key) => `","${key}"`), '"}']
+
+  let bestIndex = -1
+  for (const marker of markers) {
+    const index = text.indexOf(marker, valueStart)
+    if (index === -1) continue
+    if (bestIndex === -1 || index < bestIndex) {
+      bestIndex = index
+    }
+  }
+
+  return bestIndex
 }
 
 function previewText(
@@ -721,3 +778,18 @@ function summarizeDispatcherResponse(
     taskDescriptionLength: response.taskDescription?.length,
   }
 }
+
+const DISPATCHER_RESPONSE_KEYS = [
+  'intent',
+  'projectId',
+  'reply',
+  'taskTitle',
+  'taskDescription',
+  'riskReason',
+  'issueLabels',
+  'gitUrl',
+  'targetGitUrl',
+  'targetBranch',
+  'prNumber',
+  'language',
+] as const
