@@ -85,6 +85,14 @@ export class FeishuChannel implements IMPlatform {
 
   async sendText(chatId: string, text: string, opts?: SendOptions): Promise<void> {
     const content = JSON.stringify({ text })
+    log.info('Sending Feishu text', {
+      chatId,
+      replyTo: opts?.replyTo,
+      textLength: text.length,
+      contentLength: content.length,
+      previewStart: previewText(text, 'start'),
+      previewEnd: previewText(text, 'end'),
+    })
     try {
       await retry(
         () =>
@@ -107,15 +115,31 @@ export class FeishuChannel implements IMPlatform {
             }),
         },
       )
+      log.info('Feishu text sent', {
+        chatId,
+        replyTo: opts?.replyTo,
+        textLength: text.length,
+      })
     } catch (err) {
       log.error(`Failed to send reply to ${chatId}`, {
         error: err instanceof Error ? err.message : String(err),
+        replyTo: opts?.replyTo,
+        textLength: text.length,
+        previewEnd: previewText(text, 'end'),
       })
     }
   }
 
   async sendCard(chatId: string, card: IMCard, opts?: SendOptions): Promise<string | undefined> {
     const content = this.buildCardJson(card)
+    log.info(
+      'Sending Feishu card',
+      summarizeCardForLog(card, {
+        chatId,
+        replyTo: opts?.replyTo,
+        contentLength: content.length,
+      }),
+    )
     try {
       const resp = await retry(
         () =>
@@ -138,10 +162,19 @@ export class FeishuChannel implements IMPlatform {
             }),
         },
       )
-      return (resp.data?.message_id as string) || undefined
+      const messageId = (resp.data?.message_id as string) || undefined
+      log.info(
+        'Feishu card sent',
+        summarizeCardForLog(card, { chatId, replyTo: opts?.replyTo, messageId }),
+      )
+      return messageId
     } catch (err) {
       log.error(`Failed to send card to ${chatId}`, {
         error: err instanceof Error ? err.message : String(err),
+        replyTo: opts?.replyTo,
+        markdownLength: card.markdown.length,
+        headerTitle: card.header?.title,
+        previewEnd: previewText(card.markdown, 'end'),
       })
       await this.sendText(chatId, card.markdown, opts)
       return undefined
@@ -149,6 +182,7 @@ export class FeishuChannel implements IMPlatform {
   }
 
   async updateCard(messageId: string, card: IMCard): Promise<boolean> {
+    log.info('Updating Feishu card', summarizeCardForLog(card, { messageId }))
     try {
       await retry(
         () =>
@@ -166,10 +200,14 @@ export class FeishuChannel implements IMPlatform {
             }),
         },
       )
+      log.info('Feishu card updated', summarizeCardForLog(card, { messageId }))
       return true
     } catch (err) {
       log.error(`Failed to update card ${messageId}`, {
         error: err instanceof Error ? err.message : String(err),
+        markdownLength: card.markdown.length,
+        headerTitle: card.header?.title,
+        previewEnd: previewText(card.markdown, 'end'),
       })
       return false
     }
@@ -195,9 +233,10 @@ export class FeishuChannel implements IMPlatform {
   }
 
   private buildCardJson(card: IMCard): string {
+    const adaptedMarkdown = this.adaptMarkdown(card.markdown)
     const cardObj: Record<string, unknown> = {
       config: { wide_screen_mode: true },
-      elements: [{ tag: 'markdown', content: this.adaptMarkdown(card.markdown) }],
+      elements: [{ tag: 'markdown', content: adaptedMarkdown }],
     }
     if (card.header) {
       cardObj.header = {
@@ -414,6 +453,30 @@ export class FeishuChannel implements IMPlatform {
         // Ignore
       }
     }
+  }
+}
+
+function previewText(
+  value: string | undefined,
+  side: 'start' | 'end',
+  maxChars = 120,
+): string | undefined {
+  if (!value) return undefined
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxChars) return normalized
+  return side === 'start' ? `${normalized.slice(0, maxChars)}…` : `…${normalized.slice(-maxChars)}`
+}
+
+function summarizeCardForLog(
+  card: IMCard,
+  extra: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...extra,
+    headerTitle: card.header?.title,
+    markdownLength: card.markdown.length,
+    previewStart: previewText(card.markdown, 'start'),
+    previewEnd: previewText(card.markdown, 'end'),
   }
 }
 

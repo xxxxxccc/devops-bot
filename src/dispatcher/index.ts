@@ -296,17 +296,42 @@ export class Dispatcher {
     replyTo?: string,
   ): Promise<void> {
     const MAX_CARD_CHARS = 4000
+    const chunks =
+      markdown.length <= MAX_CARD_CHARS ? [markdown] : splitMarkdown(markdown, MAX_CARD_CHARS)
+
+    log.info('Delivering IM reply', {
+      chatId,
+      replyTo,
+      thinkingCardId,
+      markdownLength: markdown.length,
+      chunkCount: chunks.length,
+      headerTitle: header?.title,
+      previewStart: previewText(markdown, 'start'),
+      previewEnd: previewText(markdown, 'end'),
+    })
+
     if (markdown.length <= MAX_CARD_CHARS) {
       if (thinkingCardId) {
+        log.info('Updating thinking card with final reply', {
+          chatId,
+          thinkingCardId,
+          markdownLength: markdown.length,
+          headerTitle: header?.title,
+        })
         const ok = await this.platform.updateCard(thinkingCardId, { markdown, header })
         if (ok) return
         log.warn('updateCard failed, falling back to new message')
       }
+      log.info('Sending single reply card', {
+        chatId,
+        replyTo,
+        markdownLength: markdown.length,
+        headerTitle: header?.title,
+      })
       await this.platform.sendCard(chatId, { markdown, header }, { replyTo })
       return
     }
 
-    const chunks = splitMarkdown(markdown, MAX_CARD_CHARS)
     for (let i = 0; i < chunks.length; i++) {
       const isFirst = i === 0
       const chunkHeader =
@@ -316,6 +341,16 @@ export class Dispatcher {
               color: header?.color,
             }
           : header
+      log.info('Sending reply chunk', {
+        chatId,
+        replyTo,
+        chunkIndex: i + 1,
+        chunkCount: chunks.length,
+        chunkLength: chunks[i].length,
+        headerTitle: chunkHeader?.title,
+        previewStart: previewText(chunks[i], 'start'),
+        previewEnd: previewText(chunks[i], 'end'),
+      })
       if (isFirst && thinkingCardId) {
         const ok = await this.platform.updateCard(thinkingCardId, {
           markdown: chunks[i],
@@ -1277,4 +1312,15 @@ function splitMarkdown(text: string, maxChars: number): string[] {
 
   if (remaining.length > 0) chunks.push(remaining)
   return chunks
+}
+
+function previewText(
+  value: string | undefined,
+  side: 'start' | 'end',
+  maxChars = 120,
+): string | undefined {
+  if (!value) return undefined
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxChars) return normalized
+  return side === 'start' ? `${normalized.slice(0, maxChars)}…` : `…${normalized.slice(-maxChars)}`
 }

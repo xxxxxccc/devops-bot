@@ -301,6 +301,16 @@ export class DispatcherAIClient {
     systemPrompt: string,
   ): Promise<DispatcherResponse> {
     const text = extractText(content)
+    const jsonDiagnostics = inspectJSONLikeText(text)
+
+    log.info('AI final response received', {
+      round,
+      stopReason,
+      textLength: text.length,
+      previewStart: previewText(text, 'start'),
+      previewEnd: previewText(text, 'end'),
+      ...jsonDiagnostics,
+    })
 
     if (round > 1) {
       log.info(`Completed after ${round} rounds`)
@@ -308,6 +318,7 @@ export class DispatcherAIClient {
 
     const parsed = extractJSON(text)
     if (parsed) {
+      log.info('AI final response parsed', summarizeDispatcherResponse(parsed))
       this.debugLog('dispatch_success', {
         round,
         intent: parsed.intent,
@@ -323,10 +334,16 @@ export class DispatcherAIClient {
       stop_reason: stopReason,
       content_blocks: contentSummary,
       raw_text: text,
+      json_diagnostics: jsonDiagnostics,
       usage,
       toolHistory,
     })
-    log.warn(`JSON parse failed (round ${round}, stop_reason=${stopReason})`)
+    log.warn(`JSON parse failed (round ${round}, stop_reason=${stopReason})`, {
+      textLength: text.length,
+      previewStart: previewText(text, 'start'),
+      previewEnd: previewText(text, 'end'),
+      ...jsonDiagnostics,
+    })
 
     return this.retryJsonParse(provider, messages, text, systemPrompt)
   }
@@ -363,9 +380,19 @@ export class DispatcherAIClient {
     )
 
     const retryText = extractText(retryResponse.content)
+    const retryDiagnostics = inspectJSONLikeText(retryText)
+
+    log.info('AI JSON retry response received', {
+      stopReason: retryResponse.stopReason,
+      textLength: retryText.length,
+      previewStart: previewText(retryText, 'start'),
+      previewEnd: previewText(retryText, 'end'),
+      ...retryDiagnostics,
+    })
 
     const retryParsed = extractJSON(retryText)
     if (retryParsed) {
+      log.info('AI JSON retry parsed', summarizeDispatcherResponse(retryParsed))
       this.debugLog('json_retry_success', { intent: retryParsed.intent, retry_text: retryText })
       return retryParsed
     }
@@ -375,7 +402,20 @@ export class DispatcherAIClient {
       retry_stop_reason: retryResponse.stopReason,
       retry_usage: retryResponse.usage,
     })
-    log.warn('Retry also failed, falling back to raw text')
+    log.warn('Retry also failed, falling back to raw text', {
+      originalTextLength: originalText.length,
+      retryTextLength: retryText.length,
+      originalPreviewEnd: previewText(originalText, 'end'),
+      retryPreviewEnd: previewText(retryText, 'end'),
+      ...retryDiagnostics,
+    })
+    if (looksLikeBrokenDispatcherJSON(originalText) || looksLikeBrokenDispatcherJSON(retryText)) {
+      return {
+        intent: 'chat',
+        reply:
+          'I hit a reply formatting error while generating the response. Please ask me to try again.',
+      }
+    }
     const fallback = originalText.length > 500 ? `${originalText.slice(0, 500)}...` : originalText
     return { intent: 'chat', reply: fallback || 'Sorry, something went wrong.' }
   }
@@ -555,27 +595,27 @@ export function extractJSON(text: string): DispatcherResponse | null {
     )
     if (intentMatch) {
       const intent = intentMatch[1] as DispatcherResponse['intent']
-      const replyMatch = text.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)/)
-      const titleMatch = text.match(/"taskTitle"\s*:\s*"((?:[^"\\]|\\.)*)/)
-      const descMatch = text.match(/"taskDescription"\s*:\s*"((?:[^"\\]|\\.)*)/)
-      const projectIdMatch = text.match(/"projectId"\s*:\s*"((?:[^"\\]|\\.)*)/)
+      const replyValue = extractJSONFieldValue(text, 'reply')
+      const titleValue = extractJSONFieldValue(text, 'taskTitle')
+      const descValue = extractJSONFieldValue(text, 'taskDescription')
+      const projectIdValue = extractJSONFieldValue(text, 'projectId')
 
       if (
         (intent === 'execute_task' || intent === 'propose_task' || intent === 'create_issue') &&
-        titleMatch
+        titleValue
       ) {
         return {
           intent,
-          projectId: projectIdMatch ? unescapeJSON(projectIdMatch[1]) : undefined,
-          taskTitle: unescapeJSON(titleMatch[1]),
-          taskDescription: descMatch ? unescapeJSON(descMatch[1]) : undefined,
+          projectId: projectIdValue ? unescapeJSON(projectIdValue) : undefined,
+          taskTitle: unescapeJSON(titleValue),
+          taskDescription: descValue ? unescapeJSON(descValue) : undefined,
         }
       }
-      if (replyMatch) {
+      if (replyValue) {
         return {
           intent,
-          reply: unescapeJSON(replyMatch[1]),
-          projectId: projectIdMatch ? unescapeJSON(projectIdMatch[1]) : undefined,
+          reply: unescapeJSON(replyValue),
+          projectId: projectIdValue ? unescapeJSON(projectIdValue) : undefined,
         }
       }
     }
@@ -624,4 +664,60 @@ export function findBalancedJSON(text: string, closeIndex: number): string | nul
     }
   }
   return null
+}
+
+function extractJSONFieldValue(text: string, key: string): string | null {
+  const match = text.match(
+    new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"\\s*(?=,|}|$)`),
+  )
+  return match?.[1] || null
+}
+
+function inspectJSONLikeText(text: string): Record<string, boolean> {
+  return {
+    hasIntent: text.includes('"intent"'),
+    hasReplyKey: text.includes('"reply"'),
+    hasCompleteReply: extractJSONFieldValue(text, 'reply') !== null,
+    hasTaskTitleKey: text.includes('"taskTitle"'),
+    hasCompleteTaskTitle: extractJSONFieldValue(text, 'taskTitle') !== null,
+  }
+}
+
+function looksLikeBrokenDispatcherJSON(text: string): boolean {
+  const diagnostics = inspectJSONLikeText(text)
+  return (
+    diagnostics.hasIntent &&
+    ((diagnostics.hasReplyKey && !diagnostics.hasCompleteReply) ||
+      (diagnostics.hasTaskTitleKey && !diagnostics.hasCompleteTaskTitle))
+  )
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function previewText(
+  value: string | undefined,
+  side: 'start' | 'end',
+  maxChars = 120,
+): string | undefined {
+  if (!value) return undefined
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxChars) return normalized
+  return side === 'start' ? `${normalized.slice(0, maxChars)}…` : `…${normalized.slice(-maxChars)}`
+}
+
+function summarizeDispatcherResponse(
+  response: DispatcherResponse,
+): Record<string, string | number | undefined> {
+  return {
+    intent: response.intent,
+    projectId: response.projectId,
+    prNumber: response.prNumber,
+    replyLength: response.reply?.length,
+    replyPreviewStart: previewText(response.reply, 'start'),
+    replyPreviewEnd: previewText(response.reply, 'end'),
+    taskTitle: response.taskTitle,
+    taskDescriptionLength: response.taskDescription?.length,
+  }
 }
